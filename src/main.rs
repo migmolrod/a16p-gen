@@ -54,7 +54,10 @@ fn run_pipeline(image: &std::path::Path, cfg: &Config) -> Result<Pipeline> {
     let mapping = semantic::parse_mapping(&mapping_toml)?;
     let resolved = semantic::resolve(&mapping, &primitives, &stats)?;
 
-    Ok(Pipeline { primitives, resolved })
+    Ok(Pipeline {
+        primitives,
+        resolved,
+    })
 }
 
 fn main() -> Result<()> {
@@ -74,7 +77,11 @@ fn main() -> Result<()> {
                 out.join("semantic.json"),
                 serde_json::to_string_pretty(&pipeline.resolved)?,
             )?;
-            println!("wrote {}/primitives.json and {}/semantic.json", out.display(), out.display());
+            println!(
+                "wrote {}/primitives.json and {}/semantic.json",
+                out.display(),
+                out.display()
+            );
             preview::print_ansi16(&pipeline.resolved);
         }
         Command::Preview { image, config } => {

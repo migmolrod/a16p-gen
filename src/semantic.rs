@@ -1,6 +1,6 @@
 use crate::extract::ImageStats;
 use crate::palette_gen::{Primitives, Swatch};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 
 /// Default role -> primitive mapping. This is where the ANSI16 semantic
@@ -61,9 +61,9 @@ fn resolve_one(value: &str, primitives: &Primitives, stats: &ImageStats) -> Resu
     let Some((ramp_name, step_str)) = value.split_once('.') else {
         bail!("invalid semantic value '{value}', expected 'ramp.step' or 'auto:bg'/'auto:fg'");
     };
-    let ramp = primitives
-        .get_ramp(ramp_name)
-        .ok_or_else(|| anyhow::anyhow!("unknown primitive ramp '{ramp_name}' in value '{value}'"))?;
+    let ramp = primitives.get_ramp(ramp_name).ok_or_else(|| {
+        anyhow::anyhow!("unknown primitive ramp '{ramp_name}' in value '{value}'")
+    })?;
     let step: u16 = step_str
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid ramp step '{step_str}' in value '{value}'"))?;
@@ -87,7 +87,7 @@ pub fn resolve(
 mod tests {
     use super::*;
     use crate::extract::{Cluster, ImageStats};
-    use crate::palette_gen::{build_primitives, GenParams};
+    use crate::palette_gen::{GenParams, build_primitives};
 
     fn sample_primitives() -> (Primitives, ImageStats) {
         let clusters = vec![
@@ -105,7 +105,10 @@ mod tests {
             mean_c: 0.1,
             is_dark: true,
         };
-        (build_primitives(&clusters, &stats, &GenParams::default()), stats)
+        (
+            build_primitives(&clusters, &stats, &GenParams::default()),
+            stats,
+        )
     }
 
     #[test]

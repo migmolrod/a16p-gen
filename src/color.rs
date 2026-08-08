@@ -41,11 +41,7 @@ pub fn to_hex(rgb: [u8; 3]) -> String {
 /// Shortest signed distance from `a` to `b` on a 360-degree circle, in [-180, 180].
 pub fn circular_diff(a: f32, b: f32) -> f32 {
     let d = (b - a).rem_euclid(360.0);
-    if d > 180.0 {
-        d - 360.0
-    } else {
-        d
-    }
+    if d > 180.0 { d - 360.0 } else { d }
 }
 
 /// True Oklch hue angle (degrees) of a pure sRGB primary/secondary color.

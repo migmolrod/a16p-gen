@@ -1,0 +1,40 @@
+[tools]
+rust = "1.97"
+
+[tasks.build]
+description = "Build debug binary"
+run = "cargo build"
+alias = "b"
+
+[tasks.release]
+description = "Build release binary"
+run = "cargo build --release"
+
+[tasks.test]
+description = "Run unit tests"
+run = "cargo test"
+alias = "t"
+
+[tasks.lint]
+description = "Lint with clippy"
+run = "cargo clippy --all-targets -- -D warnings"
+
+[tasks.fmt]
+description = "Format source"
+run = "cargo fmt"
+
+[tasks.fmt-check]
+description = "Check formatting without writing"
+run = "cargo fmt -- --check"
+
+[tasks.ci]
+description = "Run everything CI would run"
+depends = ["fmt-check", "lint", "test"]
+
+[tasks.preview]
+description = "Preview a palette in the terminal without writing files: mise run preview -- ./wallpaper.jpg"
+run = "cargo run -- preview"
+
+[tasks.generate]
+description = "Generate primitives.json + semantic.json: mise run generate -- ./wallpaper.jpg -o ./out"
+run = "cargo run -- generate"

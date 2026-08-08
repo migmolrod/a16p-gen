@@ -1,4 +1,6 @@
-use crate::color::{circular_diff, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab, pure_hue_anchor, to_hex};
+use crate::color::{
+    circular_diff, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab, pure_hue_anchor, to_hex,
+};
 use crate::extract::{Cluster, ImageStats};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -72,7 +74,12 @@ impl HueSlot {
 /// Nearest weighted cluster to `target_hue` within `tolerance` degrees and
 /// carrying at least `min_weight` share of the image. Skips near-neutral
 /// clusters since a gray pixel's hue angle is noise, not signal.
-pub fn match_hue(clusters: &[Cluster], target_hue: f32, tolerance: f32, min_weight: f32) -> Option<[f32; 3]> {
+pub fn match_hue(
+    clusters: &[Cluster],
+    target_hue: f32,
+    tolerance: f32,
+    min_weight: f32,
+) -> Option<[f32; 3]> {
     let mut best: Option<(f32, [f32; 3])> = None;
     for c in clusters {
         if c.weight < min_weight {
@@ -118,7 +125,8 @@ pub fn resolve_hue_slot(
     min_weight: f32,
 ) -> [f32; 3] {
     let target = slot.anchor_hue();
-    match_hue(clusters, target, tolerance, min_weight).unwrap_or_else(|| fallback_rotate(clusters, target, stats))
+    match_hue(clusters, target, tolerance, min_weight)
+        .unwrap_or_else(|| fallback_rotate(clusters, target, stats))
 }
 
 /// Weighted circular mean hue across clusters, weighted by weight*chroma so
@@ -221,7 +229,11 @@ impl Default for GenParams {
     }
 }
 
-pub fn build_primitives(clusters: &[Cluster], stats: &ImageStats, params: &GenParams) -> Primitives {
+pub fn build_primitives(
+    clusters: &[Cluster],
+    stats: &ImageStats,
+    params: &GenParams,
+) -> Primitives {
     let chroma_cap = stats.mean_c.max(0.02) * params.chroma_clamp_factor;
 
     let mut ramps: BTreeMap<&'static str, Ramp> = BTreeMap::new();
@@ -237,7 +249,10 @@ pub fn build_primitives(clusters: &[Cluster], stats: &ImageStats, params: &GenPa
     }
 
     let neutral_hue = weighted_mean_hue(clusters);
-    let neutral = generate_ramp([0.5, params.neutral_tint_chroma, neutral_hue], params.neutral_tint_chroma);
+    let neutral = generate_ramp(
+        [0.5, params.neutral_tint_chroma, neutral_hue],
+        params.neutral_tint_chroma,
+    );
 
     let accent_anchor = pick_accent(clusters);
     let accent = generate_ramp(accent_anchor, chroma_cap.max(accent_anchor[1]));
