@@ -102,6 +102,28 @@ These constants (`hue_tolerance`, `chroma_clamp_factor`, `neutral_tint_chroma`,
 is the fast loop for eyeballing changes; there's no automated "looks good"
 check because that's inherently a perceptual judgment call.
 
+Every `Config` field is tunable via a TOML file rather than editing
+constants in source — see "Config file" below. `hue_tolerance` and
+`chroma_clamp_factor` are the ones actually worth iterating on per
+wallpaper; the rest rarely need touching.
+
+## Config file (XDG)
+
+`Config::load` (`src/config.rs`) resolves, in order: explicit `--config`
+path (must exist) → `$XDG_CONFIG_HOME/a16p-gen/config.toml` (fallback
+`~/.config/a16p-gen/config.toml`, via `src/xdg.rs::default_config_path`,
+Linux-only plain env lookup, no `dirs` crate) → `Config::default()`
+silently if neither exists. The whole-struct `#[serde(default)]` means a
+config file only needs to set the fields being tuned; everything else
+falls back.
+
+`a16p config init` writes `Config::annotated_default_toml()` — a
+comment-per-field template with defaults interpolated from
+`Config::default()` (can't drift out of sync) — to the XDG path; refuses
+to overwrite without `--force`. `a16p config path` prints the resolved
+path without touching anything. Mise wraps these as `config-init` /
+`config-path`.
+
 ## Module map
 
 - `src/color.rs` — sRGB↔Oklab↔Oklch conversions, gamut clip, hex, circular
@@ -113,17 +135,26 @@ check because that's inherently a perceptual judgment call.
   correctness, anchor spread).
 - `src/semantic.rs` — default mapping, resolution logic. Unit tested
   (parses, resolves, `auto:bg`/`auto:fg` pick correctly, unknown ramp errors).
-- `src/config.rs` — `Config` (TOML-loadable, has `Default`), maps to
-  `GenParams`.
+- `src/config.rs` — `Config` (TOML-loadable, has `Default`), XDG-aware
+  `load`, `annotated_default_toml` template, maps to `GenParams`.
+- `src/xdg.rs` — XDG Base Directory config path resolution. Unit tested.
 - `src/preview.rs` — truecolor ANSI escape swatch printer.
-- `src/main.rs` — clap CLI (`generate`, `preview`), wires the pipeline.
+- `src/main.rs` — clap CLI (`generate`, `preview`, `config init`/`path`),
+  wires the pipeline.
 
 ## Testing
 
-`mise run test` (14 unit tests as of initial commit, all pure-function —
-no image fixtures needed). For pipeline-level sanity checks, synthetic test
-images were generated with Python/Pillow (not committed, were scratch
-files) — a colorful patchwork image to verify direct hue matching, and a
-warm-only gradient to verify the fallback path doesn't crash or produce
-garish output. Recreate similarly if needed rather than relying on
-`find`-ing real wallpapers.
+`mise run test` (17 unit tests as of the config/XDG commit, all
+pure-function — no image fixtures needed). For pipeline-level sanity
+checks, synthetic test images were generated with Python/Pillow (not
+committed, were scratch files) — a colorful patchwork image to verify
+direct hue matching, and a warm-only gradient to verify the fallback path
+doesn't crash or produce garish output. Recreate similarly if needed
+rather than relying on `find`-ing real wallpapers.
+
+When testing XDG path resolution by hand, override `XDG_CONFIG_HOME`
+directly — overriding `HOME` alone does nothing if `XDG_CONFIG_HOME` is
+already set in the shell (it takes precedence, correctly), and `mise` runs
+inherit the calling shell's env. Confirmed the hard way: an early manual
+test overrode `HOME` only and ended up writing a real file to this user's
+actual `~/.config/a16p-gen/config.toml` as a side effect.

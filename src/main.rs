@@ -4,6 +4,7 @@ mod extract;
 mod palette_gen;
 mod preview;
 mod semantic;
+mod xdg;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -32,6 +33,23 @@ enum Command {
         image: PathBuf,
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+    /// Inspect or create the XDG config file
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Print the resolved config path (may not exist yet)
+    Path,
+    /// Write a fully-commented default config to the XDG config path
+    Init {
+        /// Overwrite the file if it already exists
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -89,6 +107,25 @@ fn main() -> Result<()> {
             let pipeline = run_pipeline(&image, &cfg)?;
             preview::print_ansi16(&pipeline.resolved);
         }
+        Command::Config { action } => match action {
+            ConfigAction::Path => {
+                println!("{}", xdg::default_config_path().display());
+            }
+            ConfigAction::Init { force } => {
+                let path = xdg::default_config_path();
+                if path.exists() && !force {
+                    anyhow::bail!(
+                        "{} already exists; pass --force to overwrite",
+                        path.display()
+                    );
+                }
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, Config::annotated_default_toml())?;
+                println!("wrote {}", path.display());
+            }
+        },
     }
 
     Ok(())

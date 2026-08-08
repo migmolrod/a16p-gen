@@ -38,3 +38,11 @@ run = "cargo run -- preview"
 [tasks.generate]
 description = "Generate primitives.json + semantic.json: mise run generate -- ./wallpaper.jpg -o ./out"
 run = "cargo run -- generate"
+
+[tasks."config-init"]
+description = "Write a commented default config to the XDG config path (pass -- --force to overwrite)"
+run = "cargo run -- config init"
+
+[tasks."config-path"]
+description = "Print the resolved XDG config path"
+run = "cargo run -q -- config path"

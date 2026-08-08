@@ -46,11 +46,28 @@ cargo run -- generate ./wallpaper.jpg -o ./out
 
 ### Config
 
-Both commands take `--config path/to/config.toml`. See `Config` in
-`src/config.rs` for all fields (cluster count `k`, `hue_tolerance`,
-`chroma_clamp_factor`, `neutral_tint_chroma`, `max_dim`, `max_iters`, and an
-optional `semantic` path to override the default role→primitive mapping).
-Without `--config`, built-in defaults are used.
+Config is TOML, and every field is optional — set only what you're tuning,
+the rest fall back to defaults. Resolution order:
+
+1. `--config path/to/config.toml` if passed — must exist.
+2. Otherwise `$XDG_CONFIG_HOME/a16p-gen/config.toml` (`~/.config/a16p-gen/config.toml`
+   if `$XDG_CONFIG_HOME` is unset), if present.
+3. Otherwise built-in defaults, silently.
+
+```sh
+mise run config-init          # write a fully-commented template to the XDG path
+mise run config-init -- --force  # overwrite an existing one
+mise run config-path          # print the resolved path
+```
+
+See `Config` in `src/config.rs` for all fields (cluster count `k`,
+`hue_tolerance`, `chroma_clamp_factor`, `neutral_tint_chroma`, `max_dim`,
+`max_iters`, and an optional `semantic` path to override the default
+role→primitive mapping) — the generated template documents each one inline.
+`hue_tolerance` and `chroma_clamp_factor` are the two most worth tuning per
+wallpaper style: tolerance controls how readily a slot direct-matches vs.
+falls back to hue-rotation, clamp controls how vivid/muted the result reads
+relative to the source image.
 
 ## Output
 
