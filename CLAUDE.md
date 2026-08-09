@@ -71,10 +71,11 @@ v2, not forgotten scope.
      or `fallback_rotate` (rotate the most prominent chromatic cluster onto
      the target hue, damping confidence via reduced chroma) if nothing
      matches.
-   - `generate_ramp`: fixed lightness curve per step (50→L≈0.95 down to
-     950→L≈0.15, **same curve for every hue** — see "Known rough edges"
-     below), chroma capped by `stats.mean_c * chroma_clamp_factor` and
-     tapered near the lightness extremes to reduce gamut clipping.
+   - `generate_ramp`: lightness curve per step (50→L≈0.95 down to
+     950→L≈0.15), bent per-hue toward each hue's own peak-chroma lightness
+     (`hue_lightness_bend`, see "Fixed" below), chroma capped by
+     `stats.mean_c * chroma_clamp_factor` and tapered near the ramp's edges
+     to reduce gamut clipping.
    - `neutral` ramp: hue/chroma blended between a flat baseline (weighted
      circular mean hue across all clusters, fixed `neutral_tint_chroma`)
      and the wallpaper's *vivid* accent (`pick_vivid_accent`), via
@@ -102,17 +103,53 @@ v2, not forgotten scope.
 
 ## Known rough edges (expected iteration, not bugs to silently "fix")
 
-- The lightness-per-step curve is hue-agnostic. Pure yellow is naturally
-  very light (Oklch L≈0.97) so yellow's mid-ramp steps read as olive/brown
-  rather than vivid yellow — correct color science, but may not match
-  intuitive "ANSI yellow" expectations. If tuning this, consider a
-  per-hue lightness curve rather than a shared one.
 - Gamut handling is naive clamping (`color::oklab_to_srgb_u8` clips r/g/b to
   `[0,1]` after conversion) rather than proper gamut mapping (reducing
   chroma until in-gamut). Fine for v1; revisit if clipped colors look
   visibly desaturated/wrong on saturated wallpapers.
 - `fallback_rotate`'s confidence damping (`* 0.8` chroma) is an arbitrary
   constant, not derived from anything. Tune by eye.
+
+### Fixed: hue-agnostic lightness curve made vivid yellow read as olive/brown
+
+Every ramp step was forced through the same L(step) curve regardless of
+hue — but each hue reaches its highest achievable chroma at a different
+lightness (pure yellow peaks near Oklch L≈0.97, pure blue near L≈0.45).
+Forcing yellow's step 500 down to the shared curve's L≈0.53 meant its
+chroma got clipped hard by the sRGB gamut boundary at that lightness,
+rendering as muddy olive/brown (`#856900`-ish) even when the wallpaper's
+actual yellow was vivid.
+
+Fixed by `hue_lightness_bend` (`GenParams`/`Config`, default 0.7, unlike
+`neutral_accent_influence` this is a correctness fix so it defaults on, not
+opt-in): `palette_gen::lightness_for_step_bent` reparametrizes the ramp's
+`t` position through a two-segment piecewise-linear warp anchored at step
+500, so step 500's lightness moves toward `peak_lightness_for_hue(hue)`
+instead of the generic curve. The true curve endpoints (t=0/L=0.95, and
+exactly step 950/L=0.15) stay fixed and the result stays monotonic by
+construction — a quadratic fit through 3 points was tried first and
+rejected because it can overshoot `[0.15, 0.95]` or wobble non-monotonically
+when the peak sits close to an endpoint (yellow's does).
+
+`peak_lightness_for_hue` estimates the peak by piecewise-linear
+interpolation between the 6 `HueSlot` corners' own computed L
+(`HueSlot::anchor_lch`), not a numeric gamut-boundary search — a real
+per-hue gamut search (binary-search chroma for in-gamut-ness, then
+ternary-search the maximizing L) was tried and rejected: at a hue angle
+that exactly matches a primary's own hue, chroma asymptotically approaches
+the gamut corner without the round-tripped sRGB ever leaving `[0, 1]`, so
+the boundary search never finds a crossing and returns garbage. The 6-point
+interpolation sidesteps that failure mode entirely.
+
+Bending also broke `chroma_taper`, which damps chroma near a *fixed* L=0.5
+center — once bending moved yellow's step 500 to L≈0.84 (near the ramp's
+light edge), the taper read that as "near an extreme" and crushed the
+chroma right back down. Fixed by tapering against the step's *position* in
+the ramp (`lightness_for_step`, pre-bend) rather than its final bent
+lightness, decoupling "how much to damp near the ramp's edges" (tuned,
+should stay stable) from "what L this hue actually renders at" (now
+per-hue). See doc comments on `lightness_for_step_bent`, `generate_ramp`,
+and `peak_lightness_for_hue` in `palette_gen.rs`.
 
 ### Fixed: small vivid accents got crushed by weight-based selection
 
@@ -176,16 +213,16 @@ as a different architecture, it's the same primitive/semantic model: the
 branch needed — this is why the three-tier model was worth having.
 
 These constants (`hue_tolerance`, `chroma_clamp_factor`, `neutral_tint_chroma`,
-`min_cluster_weight`, `neutral_accent_influence`) are the knobs — see
-`Config` in `src/config.rs` and `GenParams` in `src/palette_gen.rs`.
-`mise run preview -- ./wallpaper.jpg` is the fast loop for eyeballing
-changes; there's no automated "looks good" check because that's inherently
-a perceptual judgment call.
+`min_cluster_weight`, `neutral_accent_influence`, `hue_lightness_bend`) are
+the knobs — see `Config` in `src/config.rs` and `GenParams` in
+`src/palette_gen.rs`. `mise run preview -- ./wallpaper.jpg` is the fast loop
+for eyeballing changes; there's no automated "looks good" check because
+that's inherently a perceptual judgment call.
 
 Every `Config` field is tunable via a TOML file rather than editing
 constants in source — see "Config file" below. `hue_tolerance`,
-`chroma_clamp_factor`, `min_cluster_weight`, and now
-`neutral_accent_influence` are the ones actually worth iterating on per
+`chroma_clamp_factor`, `min_cluster_weight`, `neutral_accent_influence`, and
+`hue_lightness_bend` are the ones actually worth iterating on per
 wallpaper; the rest rarely need touching.
 
 ## Config file (XDG)
@@ -233,7 +270,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (28 unit tests as of the accent/highlight split, all
+`mise run test` (32 unit tests as of the hue-lightness-bend fix, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify

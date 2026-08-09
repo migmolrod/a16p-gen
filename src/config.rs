@@ -14,6 +14,7 @@ pub struct Config {
     pub chroma_clamp_factor: f32,
     pub neutral_tint_chroma: f32,
     pub neutral_accent_influence: f32,
+    pub hue_lightness_bend: f32,
     pub semantic: Option<String>,
 }
 
@@ -29,6 +30,7 @@ impl Default for Config {
             chroma_clamp_factor: defaults.chroma_clamp_factor,
             neutral_tint_chroma: defaults.neutral_tint_chroma,
             neutral_accent_influence: defaults.neutral_accent_influence,
+            hue_lightness_bend: defaults.hue_lightness_bend,
             semantic: None,
         }
     }
@@ -65,6 +67,7 @@ impl Config {
             chroma_clamp_factor: self.chroma_clamp_factor,
             neutral_tint_chroma: self.neutral_tint_chroma,
             neutral_accent_influence: self.neutral_accent_influence,
+            hue_lightness_bend: self.hue_lightness_bend,
         }
     }
 
@@ -127,6 +130,17 @@ neutral_tint_chroma = {neutral_tint_chroma}
 # instead of the ANSI colors. Start around 0.3-0.5 and adjust by eye.
 neutral_accent_influence = {neutral_accent_influence}
 
+# Every hue reaches its highest possible chroma at a different lightness
+# (pure yellow peaks near L=0.97, pure blue near L=0.45) -- but each ramp's
+# step 500 was always forced to the same L≈0.53 regardless of hue, which is
+# why mid-ramp yellow reads as muddy olive/brown instead of vivid. This
+# bends step 500 toward the hue's actual peak-chroma lightness: 0 = old
+# behavior (every hue forced through the same curve), 1 = step 500 lands
+# exactly on the hue's peak (ramps across hues then span visibly different
+# lightness ranges). Unlike neutral_accent_influence this isn't a style
+# choice, so it defaults on.
+hue_lightness_bend = {hue_lightness_bend}
+
 # Optional path to a custom semantic role -> primitive mapping TOML file,
 # overriding the built-in default (src/semantic.rs::DEFAULT_SEMANTIC_TOML).
 # semantic = "/path/to/semantic.toml"
@@ -139,6 +153,7 @@ neutral_accent_influence = {neutral_accent_influence}
             chroma_clamp_factor = d.chroma_clamp_factor,
             neutral_tint_chroma = d.neutral_tint_chroma,
             neutral_accent_influence = d.neutral_accent_influence,
+            hue_lightness_bend = d.hue_lightness_bend,
         )
     }
 }

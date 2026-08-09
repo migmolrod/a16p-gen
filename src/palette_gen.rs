@@ -1,5 +1,5 @@
 use crate::color::{
-    circular_diff, lerp_hue, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab, pure_hue_anchor,
+    circular_diff, lerp_hue, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab, pure_corner_oklch,
     to_hex,
 };
 use crate::extract::{CHROMATIC_THRESHOLD, Cluster, ImageStats};
@@ -56,20 +56,71 @@ impl HueSlot {
         }
     }
 
-    /// True Oklch hue angle of the pure sRGB primary/secondary, computed
-    /// (not hardcoded) so it tracks whatever this crate version's conversion
-    /// actually produces.
-    pub fn anchor_hue(self) -> f32 {
-        let rgb = match self {
+    fn corner_rgb(self) -> [u8; 3] {
+        match self {
             HueSlot::Red => [255, 0, 0],
             HueSlot::Yellow => [255, 255, 0],
             HueSlot::Green => [0, 255, 0],
             HueSlot::Cyan => [0, 255, 255],
             HueSlot::Blue => [0, 0, 255],
             HueSlot::Magenta => [255, 0, 255],
-        };
-        pure_hue_anchor(rgb)
+        }
     }
+
+    /// Oklch of this slot's pure sRGB primary/secondary, computed (not
+    /// hardcoded) so it tracks whatever this crate version's conversion
+    /// actually produces. The L component is this hue's "natural" fully-
+    /// saturated lightness (pure yellow's L≈0.97, pure blue's L≈0.45) --
+    /// used by `peak_lightness_for_hue` to bend the ramp's lightness curve.
+    pub fn anchor_lch(self) -> [f32; 3] {
+        pure_corner_oklch(self.corner_rgb())
+    }
+
+    /// True Oklch hue angle of the pure sRGB primary/secondary.
+    pub fn anchor_hue(self) -> f32 {
+        self.anchor_lch()[2]
+    }
+}
+
+/// Estimate the lightness at which an arbitrary hue "naturally" reaches its
+/// highest chroma, by interpolating between the two nearest of the 6 known
+/// pure-primary/secondary corners (whose exact L is computed, not
+/// hardcoded -- see `HueSlot::anchor_lch`). A true per-hue gamut-boundary
+/// search (binary-search max in-gamut chroma per L, then hunt for the
+/// maximizing L) was tried and rejected -- not for a fundamental reason, but
+/// because `palette`'s `into_color()` clamps internally (see
+/// `color::in_gamut`'s doc comment), so a boundary check built on it is a
+/// tautology that always reports "in gamut." That's fixable with
+/// `into_color_unclamped()` (see `color::gamut_map_oklch`, which needed the
+/// same fix for actual gamut mapping), but piecewise-linear interpolation
+/// between 6 known-good points is simpler, cheaper, and plenty accurate for
+/// a lightness *curve bend*, not a precision gamut map -- so it stayed.
+pub fn peak_lightness_for_hue(hue: f32) -> f32 {
+    let mut anchors: Vec<(f32, f32)> = HueSlot::ALL
+        .iter()
+        .map(|s| {
+            let lch = s.anchor_lch();
+            (lch[2], lch[0])
+        })
+        .collect();
+    anchors.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let n = anchors.len();
+    for i in 0..n {
+        let (h0, l0) = anchors[i];
+        let (h1, l1) = anchors[(i + 1) % n];
+        let span = if h1 > h0 { h1 - h0 } else { h1 + 360.0 - h0 };
+        let rel = if hue >= h0 {
+            hue - h0
+        } else {
+            hue + 360.0 - h0
+        };
+        if rel <= span {
+            let t = (rel / span).clamp(0.0, 1.0);
+            return l0 + (l1 - l0) * t;
+        }
+    }
+    anchors[0].1
 }
 
 /// Nearest weighted cluster to `target_hue` within `tolerance` degrees and
@@ -201,9 +252,48 @@ pub fn pick_vivid_accent(clusters: &[Cluster], min_weight: f32) -> [f32; 3] {
 
 pub const RAMP_STEPS: [u16; 11] = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
 
+const MID_STEP: f32 = 500.0;
+
 fn lightness_for_step(step: u16) -> f32 {
     let t = step as f32 / 950.0;
     0.95 - t * 0.80
+}
+
+/// Same shared curve as `lightness_for_step`, but bent per-hue so the ramp's
+/// step-500 lightness moves toward wherever *this* hue can actually reach
+/// its highest chroma (`peak_lightness_for_hue`) rather than every hue being
+/// forced through the same generic 0.95->0.15 line. Pure yellow peaks near
+/// L≈0.97; forcing it through the shared curve's L≈0.53 at step 500 is
+/// exactly why mid-ramp yellow reads as olive/brown instead of vivid --
+/// see "Known rough edges" in CLAUDE.md. `bend` is 0 (shared curve exactly,
+/// old behavior) to 1 (step 500 lands exactly on the hue's peak).
+///
+/// Implementation: reparametrize `t` through a two-segment piecewise-linear
+/// warp anchored at (t_for_step_500, t_for_blended_target), then evaluate
+/// the original linear curve at the warped `t`. This guarantees the true
+/// curve endpoints (t=0 -> L=0.95, t=1 -> L=0.15, i.e. exactly step 950)
+/// stay fixed and the result stays monotonic, unlike fitting a quadratic
+/// through three points which can overshoot the [0.15, 0.95] range or
+/// wobble non-monotonically when the peak is close to an endpoint (e.g.
+/// yellow). Step 50 (t≈0.053, not quite t=0) still shifts with `bend` --
+/// for a hue whose peak sits far from the generic step-500 lightness, the
+/// whole upper half of the ramp stretches toward it, not just step 500.
+fn lightness_for_step_bent(step: u16, hue: f32, bend: f32) -> f32 {
+    let t = step as f32 / 950.0;
+    if bend <= 0.0 {
+        return lightness_for_step(step);
+    }
+    let anchor_t = MID_STEP / 950.0;
+    let generic_mid = lightness_for_step(MID_STEP as u16);
+    let peak_l = peak_lightness_for_hue(hue);
+    let target_mid = (generic_mid + (peak_l - generic_mid) * bend).clamp(0.15, 0.95);
+    let t_mid = ((0.95 - target_mid) / 0.80).clamp(0.0, 1.0);
+    let t_warped = if t <= anchor_t {
+        t / anchor_t * t_mid
+    } else {
+        t_mid + (t - anchor_t) / (1.0 - anchor_t) * (1.0 - t_mid)
+    };
+    0.95 - t_warped * 0.80
 }
 
 /// Damp chroma toward the extremes of the lightness ramp so very light/dark
@@ -213,14 +303,20 @@ fn chroma_taper(l: f32) -> f32 {
     (1.0 - d * 0.85).clamp(0.15, 1.0)
 }
 
-pub fn generate_ramp(anchor_lch: [f32; 3], chroma_cap: f32) -> Ramp {
+pub fn generate_ramp(anchor_lch: [f32; 3], chroma_cap: f32, hue_lightness_bend: f32) -> Ramp {
     let hue = anchor_lch[2];
     let base_chroma = anchor_lch[1].min(chroma_cap);
     RAMP_STEPS
         .iter()
         .map(|&step| {
-            let l = lightness_for_step(step);
-            let c = base_chroma * chroma_taper(l);
+            let l = lightness_for_step_bent(step, hue, hue_lightness_bend);
+            // Taper against the step's *position* in the ramp (the
+            // pre-bend generic curve), not its final bent lightness --
+            // otherwise bending a hue's mid-ramp lightness away from 0.5
+            // (e.g. yellow's step 500 moving to L≈0.84) gets read by the
+            // taper as "near an extreme" and crushes exactly the chroma
+            // the bend was meant to preserve.
+            let c = base_chroma * chroma_taper(lightness_for_step(step));
             (step, swatch_from_oklch([l, c, hue]))
         })
         .collect()
@@ -270,6 +366,7 @@ pub struct GenParams {
     pub chroma_clamp_factor: f32,
     pub neutral_tint_chroma: f32,
     pub neutral_accent_influence: f32,
+    pub hue_lightness_bend: f32,
 }
 
 impl Default for GenParams {
@@ -290,6 +387,14 @@ impl Default for GenParams {
             // going too high reintroduces matugen's "everything is one
             // hue" problem, just relocated to bg/fg.
             neutral_accent_influence: 0.0,
+            // Nonzero by default (unlike neutral_accent_influence): this is
+            // a correctness fix for the shared-lightness-curve rough edge,
+            // not a stylistic judgment call. 0.7 rather than 1.0 so mid-ramp
+            // still tracks the shared curve somewhat -- landing exactly on
+            // each hue's peak-chroma lightness makes ramps across different
+            // hues span visibly different lightness ranges, which looks
+            // inconsistent for a themed ANSI16 set.
+            hue_lightness_bend: 0.7,
         }
     }
 }
@@ -313,7 +418,10 @@ pub fn build_primitives(
             params.hue_tolerance,
             params.min_cluster_weight,
         );
-        ramps.insert(slot.name(), generate_ramp(anchor, chroma_cap));
+        ramps.insert(
+            slot.name(),
+            generate_ramp(anchor, chroma_cap, params.hue_lightness_bend),
+        );
     }
 
     // bg/fg tint: blend from the flat average-hue/fixed-chroma baseline
@@ -327,11 +435,23 @@ pub fn build_primitives(
     let vivid_chroma = vivid_accent[1].min(chroma_cap);
     let neutral_chroma = params.neutral_tint_chroma
         + (vivid_chroma - params.neutral_tint_chroma).max(0.0) * influence;
-    let neutral = generate_ramp([0.5, neutral_chroma, neutral_hue], neutral_chroma);
+    let neutral = generate_ramp(
+        [0.5, neutral_chroma, neutral_hue],
+        neutral_chroma,
+        params.hue_lightness_bend,
+    );
 
     let accent_anchor = pick_accent(clusters);
-    let accent = generate_ramp(accent_anchor, chroma_cap.max(accent_anchor[1]));
-    let highlight = generate_ramp(vivid_accent, chroma_cap.max(vivid_accent[1]));
+    let accent = generate_ramp(
+        accent_anchor,
+        chroma_cap.max(accent_anchor[1]),
+        params.hue_lightness_bend,
+    );
+    let highlight = generate_ramp(
+        vivid_accent,
+        chroma_cap.max(vivid_accent[1]),
+        params.hue_lightness_bend,
+    );
 
     Primitives {
         red: ramps.remove("red").unwrap(),
@@ -352,7 +472,7 @@ mod tests {
 
     #[test]
     fn ramp_is_monotonically_lighter_toward_low_steps() {
-        let ramp = generate_ramp([0.5, 0.15, 30.0], 0.2);
+        let ramp = generate_ramp([0.5, 0.15, 30.0], 0.2, 0.7);
         let l50 = ramp[&50].oklch[0];
         let l950 = ramp[&950].oklch[0];
         assert!(l50 > l950);
@@ -360,10 +480,40 @@ mod tests {
 
     #[test]
     fn ramp_chroma_never_exceeds_cap() {
-        let ramp = generate_ramp([0.5, 0.5, 30.0], 0.2);
+        let ramp = generate_ramp([0.5, 0.5, 30.0], 0.2, 0.7);
         for swatch in ramp.values() {
             assert!(swatch.oklch[1] <= 0.2 + 1e-4);
         }
+    }
+
+    #[test]
+    fn ramp_is_monotonic_across_all_steps_when_bent() {
+        // The piecewise-linear t-warp must stay monotonic end-to-end, not
+        // just at the endpoints, for every bend strength -- otherwise a
+        // "lighter" step could render darker than a step above it.
+        for bend in [0.0, 0.3, 0.7, 1.0] {
+            let ramp = generate_ramp([0.5, 0.15, 95.0], 0.2, bend);
+            let mut prev_l = f32::INFINITY;
+            for &step in RAMP_STEPS.iter() {
+                let l = ramp[&step].oklch[0];
+                assert!(l <= prev_l, "bend={bend} step={step} l={l} prev={prev_l}");
+                prev_l = l;
+            }
+        }
+    }
+
+    #[test]
+    fn bent_ramp_moves_step_500_toward_hue_peak_lightness() {
+        // Yellow's peak-chroma lightness is much higher than the generic
+        // curve's step-500 value (~0.53) -- bending should visibly move
+        // step 500 toward that peak, which is the actual fix for the
+        // "mid-ramp yellow reads as olive/brown" rough edge.
+        let yellow_hue = HueSlot::Yellow.anchor_hue();
+        let flat = generate_ramp([0.5, 0.1, yellow_hue], 0.2, 0.0);
+        let bent = generate_ramp([0.5, 0.1, yellow_hue], 0.2, 0.7);
+        assert!(bent[&500].oklch[0] > flat[&500].oklch[0] + 0.1);
+        // The true curve floor (step 950, t=1) stays put regardless of bend.
+        assert!((bent[&950].oklch[0] - flat[&950].oklch[0]).abs() < 1e-4);
     }
 
     #[test]
@@ -517,8 +667,10 @@ mod tests {
         };
         let primitives = build_primitives(&clusters, &stats, &params);
         let n500 = &primitives.neutral[&500];
-        let expected = params.neutral_tint_chroma * chroma_taper(lightness_for_step(500));
-        assert!((n500.oklch[1] - expected).abs() < 1e-4);
+        // Taper is against ramp *position* (the pre-bend generic curve),
+        // not the final bent lightness -- see generate_ramp's comment.
+        let expected_c = params.neutral_tint_chroma * chroma_taper(lightness_for_step(500));
+        assert!((n500.oklch[1] - expected_c).abs() < 1e-4);
     }
 
     #[test]
@@ -559,5 +711,23 @@ mod tests {
                 assert!(circular_diff(a.anchor_hue(), b.anchor_hue()).abs() > 10.0);
             }
         }
+    }
+
+    #[test]
+    fn peak_lightness_for_hue_matches_known_anchors_exactly() {
+        // Feeding a known anchor's own hue back in should return that
+        // anchor's own L exactly (t=0 on the interpolation segment).
+        for slot in HueSlot::ALL {
+            let lch = slot.anchor_lch();
+            assert!((peak_lightness_for_hue(lch[2]) - lch[0]).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn peak_lightness_for_hue_yellow_much_higher_than_blue() {
+        let yellow_peak = peak_lightness_for_hue(HueSlot::Yellow.anchor_hue());
+        let blue_peak = peak_lightness_for_hue(HueSlot::Blue.anchor_hue());
+        assert!(yellow_peak > 0.9);
+        assert!(blue_peak < 0.55);
     }
 }

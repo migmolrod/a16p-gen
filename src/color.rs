@@ -44,12 +44,13 @@ pub fn circular_diff(a: f32, b: f32) -> f32 {
     if d > 180.0 { d - 360.0 } else { d }
 }
 
-/// True Oklch hue angle (degrees) of a pure sRGB primary/secondary color.
-/// Computed rather than hardcoded so the anchors are exact for whatever
-/// color space conversion this crate version actually implements.
-pub fn pure_hue_anchor(rgb: [u8; 3]) -> f32 {
-    let lab = srgb_u8_to_oklab(rgb);
-    oklab_to_oklch(lab)[2]
+/// Oklch of a pure sRGB primary/secondary color. Computed rather than
+/// hardcoded so it's exact for whatever this crate version's conversion
+/// actually implements -- both the hue angle (used as an ANSI hue-slot
+/// target) and, at the L component, the lightness that hue naturally sits
+/// at when fully saturated (e.g. pure yellow's L≈0.97, pure blue's L≈0.45).
+pub fn pure_corner_oklch(rgb: [u8; 3]) -> [f32; 3] {
+    oklab_to_oklch(srgb_u8_to_oklab(rgb))
 }
 
 /// Interpolate from hue `a` toward hue `b` along the shorter arc, `t` in
@@ -94,12 +95,12 @@ mod tests {
 
     #[test]
     fn primary_hue_anchors_are_distinct_and_spread() {
-        let red = pure_hue_anchor([255, 0, 0]);
-        let yellow = pure_hue_anchor([255, 255, 0]);
-        let green = pure_hue_anchor([0, 255, 0]);
-        let cyan = pure_hue_anchor([0, 255, 255]);
-        let blue = pure_hue_anchor([0, 0, 255]);
-        let magenta = pure_hue_anchor([255, 0, 255]);
+        let red = pure_corner_oklch([255, 0, 0])[2];
+        let yellow = pure_corner_oklch([255, 255, 0])[2];
+        let green = pure_corner_oklch([0, 255, 0])[2];
+        let cyan = pure_corner_oklch([0, 255, 255])[2];
+        let blue = pure_corner_oklch([0, 0, 255])[2];
+        let magenta = pure_corner_oklch([255, 0, 255])[2];
         let hues = [red, yellow, green, cyan, blue, magenta];
         for i in 0..hues.len() {
             for j in (i + 1)..hues.len() {
