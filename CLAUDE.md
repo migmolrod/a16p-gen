@@ -103,8 +103,36 @@ v2, not forgotten scope.
 
 ## Known rough edges (expected iteration, not bugs to silently "fix")
 
-- `fallback_rotate`'s confidence damping (`* 0.8` chroma) is an arbitrary
-  constant, not derived from anything. Tune by eye.
+None currently tracked — the three rough edges below were the initial
+batch (identified 2026-08-09), and all three are fixed. Add new ones here
+as they turn up; don't silently "fix" something noted here without calling
+it out, since it may be a deliberate v1 tradeoff rather than a bug.
+
+### Fixed: `fallback_rotate`'s confidence damping was a flat, unexplained constant
+
+Chroma for a rotated fallback color (no cluster matched within
+`hue_tolerance` of a target ANSI hue, so the most vivid qualifying cluster
+gets rotated onto that hue instead) was always damped by a flat `* 0.8`,
+regardless of how much of a stretch the rotation actually was. A cluster
+just 1 degree past `hue_tolerance` (`match_hue` almost accepted it) got
+damped exactly as hard as one dragged from the opposite side of the hue
+wheel — no signal in the number, "tune by eye" per the old rough-edges note.
+
+Fixed by `fallback_confidence(distance, tolerance)`: linearly scales
+confidence from 1.0 (distance == tolerance, i.e. barely missed a real
+match) down to `FALLBACK_MIN_CONFIDENCE` (0.5) at distance == 180 (the
+opposite hue, the worst possible rotation). The case where `most_vivid`
+finds no qualifying cluster at all (pure stats-based guess, not even a real
+cluster's hue to measure a distance from) gets the floor confidence
+outright rather than a computed value. `fallback_rotate` gained a
+`tolerance` parameter to make this possible — same position as
+`match_hue`'s, for symmetry.
+
+Confirmed this isn't just theoretical: `a16p clusters
+~/media/pictures/wallpapers/isma-defiance.jpg` shows the nearest cluster to
+the yellow anchor (109.8°) sits at hue 142.7° — distance ~33°, just past the
+default `hue_tolerance=30`. That's exactly the near-miss case this fix
+targets; it now keeps ~99% confidence instead of a flat 80%.
 
 ### Fixed: naive per-channel gamut clamping instead of proper gamut mapping
 
@@ -282,9 +310,10 @@ path without touching anything. Mise wraps these as `config-init` /
   (`mean_c` vs `chromatic_mean_c`, see rough-edges fix above). Unit tested
   (cluster separation, weight normalization, chromatic_mean_c behavior).
 - `src/palette_gen.rs` — hue matching/fallback (fallback picks by chroma
-  among clusters clearing `min_weight`, not by weight), ramp generation,
-  primitives assembly. Unit tested (monotonic ramps, chroma cap, hue
-  matching/fallback correctness including the vivid-vs-prevalent case,
+  among clusters clearing `min_weight`, not by weight; damps confidence by
+  rotation distance, see "Fixed" above), ramp generation, primitives
+  assembly. Unit tested (monotonic ramps, chroma cap, hue matching/fallback
+  correctness including the vivid-vs-prevalent case and confidence damping,
   anchor spread).
 - `src/semantic.rs` — default mapping, resolution logic. Unit tested
   (parses, resolves, `auto:bg`/`auto:fg` pick correctly, unknown ramp errors).
@@ -302,7 +331,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (35 unit tests as of the gamut-mapping fix, all
+`mise run test` (37 unit tests as of the fallback-confidence fix, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify

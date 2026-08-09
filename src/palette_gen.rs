@@ -172,28 +172,63 @@ fn most_vivid(clusters: &[Cluster], min_weight: f32) -> Option<Cluster> {
         })
 }
 
+/// Floor confidence multiplier for `fallback_rotate`'s chroma damping --
+/// the worst case, a rotation with no real basis at all (`most_vivid` found
+/// no qualifying cluster) or one dragged from the opposite side of the hue
+/// wheel. Never damps to zero: even the least-confident fallback should
+/// still register as *some* color, not vanish into gray.
+const FALLBACK_MIN_CONFIDENCE: f32 = 0.5;
+
+/// How much to trust a fallback rotation, based on how far the borrowed
+/// cluster's actual hue sits from `target_hue`. A cluster just barely
+/// outside `tolerance` (i.e. `match_hue` almost accepted it) is close to a
+/// real match, so it keeps full confidence; a cluster from clear across the
+/// hue wheel (180 degrees off) is close to a coin flip, so it's damped to
+/// `FALLBACK_MIN_CONFIDENCE`. Replaces a flat, unexplained `* 0.8` constant
+/// that damped every fallback the same amount regardless of how much of a
+/// stretch the rotation actually was.
+fn fallback_confidence(distance: f32, tolerance: f32) -> f32 {
+    let worst = (180.0 - tolerance).max(1.0);
+    let t = ((distance - tolerance) / worst).clamp(0.0, 1.0);
+    1.0 - t * (1.0 - FALLBACK_MIN_CONFIDENCE)
+}
+
 /// When the image has no real presence near `target_hue`, borrow the most
 /// vivid qualifying cluster (see `most_vivid`) and rotate it onto the
 /// target hue, keeping its lightness (clamped to a workable range) and
-/// damping its chroma to signal lower confidence than a genuine match.
+/// damping its chroma by `fallback_confidence` to signal lower confidence
+/// than a genuine match.
 pub fn fallback_rotate(
     clusters: &[Cluster],
     target_hue: f32,
     stats: &ImageStats,
+    tolerance: f32,
     min_weight: f32,
 ) -> [f32; 3] {
     let vivid = most_vivid(clusters, min_weight);
 
-    let (l, c) = match vivid {
+    let (l, c, confidence) = match vivid {
         Some(cluster) => {
             let lch = oklab_to_oklch(cluster.oklab);
-            (lch[0].clamp(0.35, 0.75), lch[1].max(0.03))
+            let distance = circular_diff(target_hue, lch[2]).abs();
+            (
+                lch[0].clamp(0.35, 0.75),
+                lch[1].max(0.03),
+                fallback_confidence(distance, tolerance),
+            )
         }
-        None => (stats.mean_l.clamp(0.35, 0.75), stats.mean_c.max(0.05)),
+        // No qualifying cluster at all -- this isn't rotating a real color,
+        // it's guessing from whole-image stats, so it gets the floor
+        // confidence outright rather than a computed distance.
+        None => (
+            stats.mean_l.clamp(0.35, 0.75),
+            stats.mean_c.max(0.05),
+            FALLBACK_MIN_CONFIDENCE,
+        ),
     };
     [
         l,
-        (c.min(stats.chromatic_mean_c.max(0.05) * 1.5)) * 0.8,
+        (c.min(stats.chromatic_mean_c.max(0.05) * 1.5)) * confidence,
         target_hue,
     ]
 }
@@ -207,7 +242,7 @@ pub fn resolve_hue_slot(
 ) -> [f32; 3] {
     let target = slot.anchor_hue();
     match_hue(clusters, target, tolerance, min_weight)
-        .unwrap_or_else(|| fallback_rotate(clusters, target, stats, min_weight))
+        .unwrap_or_else(|| fallback_rotate(clusters, target, stats, tolerance, min_weight))
 }
 
 /// Weighted circular mean hue across clusters, weighted by weight*chroma so
@@ -553,7 +588,7 @@ mod tests {
             chromatic_mean_c: 0.1,
             is_dark: false,
         };
-        let lch = fallback_rotate(&clusters, 29.0, &stats, 0.02);
+        let lch = fallback_rotate(&clusters, 29.0, &stats, 30.0, 0.02);
         assert!((lch[2] - 29.0).abs() < 1e-3);
     }
 
@@ -578,7 +613,7 @@ mod tests {
             chromatic_mean_c: 0.04,
             is_dark: true,
         };
-        let lch = fallback_rotate(&clusters, 29.0, &stats, 0.005);
+        let lch = fallback_rotate(&clusters, 29.0, &stats, 30.0, 0.005);
         // Rotated chroma is damped/capped, but should still track the vivid
         // cluster's L (0.5), not the dull cluster's L (0.3).
         assert!((lch[0] - 0.5).abs() < 1e-3);
@@ -605,10 +640,65 @@ mod tests {
             chromatic_mean_c: 0.03,
             is_dark: true,
         };
-        let lch = fallback_rotate(&clusters, 29.0, &stats, 0.005);
+        let lch = fallback_rotate(&clusters, 29.0, &stats, 30.0, 0.005);
         // L=0.3 clamped up to the 0.35 floor -- the dull cluster's L, not
         // the vivid-but-too-small cluster's L=0.5.
         assert!((lch[0] - 0.35).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fallback_rotate_damps_chroma_less_for_a_near_miss_than_a_far_miss() {
+        // Both clusters are equally vivid and equally weighted; only their
+        // distance from target_hue=29.0 differs. A cluster just past
+        // tolerance=30 (hue 61, distance 32) is nearly a real match and
+        // should keep most of its chroma; one from the opposite side of the
+        // wheel (hue 209, distance 180) should be damped much harder.
+        let near_miss = vec![Cluster {
+            oklab: oklch_to_oklab([0.5, 0.2, 61.0]),
+            weight: 0.5,
+        }];
+        let far_miss = vec![Cluster {
+            oklab: oklch_to_oklab([0.5, 0.2, 209.0]),
+            weight: 0.5,
+        }];
+        let stats = ImageStats {
+            mean_l: 0.5,
+            mean_c: 0.1,
+            chromatic_mean_c: 0.2,
+            is_dark: false,
+        };
+        let near = fallback_rotate(&near_miss, 29.0, &stats, 30.0, 0.005);
+        let far = fallback_rotate(&far_miss, 29.0, &stats, 30.0, 0.005);
+        assert!(near[1] > far[1]);
+        // Far miss should land at (or very near) the floor confidence.
+        let expected_far_c =
+            0.2f32.min(stats.chromatic_mean_c.max(0.05) * 1.5) * FALLBACK_MIN_CONFIDENCE;
+        assert!((far[1] - expected_far_c).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fallback_rotate_with_no_qualifying_cluster_gets_floor_confidence() {
+        // No cluster clears min_weight -- most_vivid returns None, so this
+        // is a pure stats-based guess and should get the same floor
+        // confidence as the worst-case rotation distance, not a computed
+        // in-between value.
+        let clusters = vec![Cluster {
+            oklab: oklch_to_oklab([0.5, 0.2, 61.0]),
+            weight: 0.001,
+        }];
+        let stats = ImageStats {
+            mean_l: 0.5,
+            mean_c: 0.1,
+            chromatic_mean_c: 0.2,
+            is_dark: false,
+        };
+        let lch = fallback_rotate(&clusters, 29.0, &stats, 30.0, 0.005);
+        let expected_c = stats
+            .mean_c
+            .max(0.05)
+            .min(stats.chromatic_mean_c.max(0.05) * 1.5)
+            * FALLBACK_MIN_CONFIDENCE;
+        assert!((lch[1] - expected_c).abs() < 1e-4);
     }
 
     #[test]
