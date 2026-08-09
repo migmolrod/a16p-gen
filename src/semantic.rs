@@ -103,6 +103,7 @@ mod tests {
         let stats = ImageStats {
             mean_l: 0.36,
             mean_c: 0.1,
+            chromatic_mean_c: 0.1,
             is_dark: true,
         };
         (

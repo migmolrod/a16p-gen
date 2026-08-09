@@ -9,9 +9,26 @@ pub struct Cluster {
     pub weight: f32,
 }
 
+/// Below this Oklch chroma, a cluster's hue is noise, not signal -- shared
+/// by `ImageStats::chromatic_mean_c` and the hue-matching/fallback logic in
+/// `palette_gen` so "is this cluster chromatic" means the same thing
+/// everywhere.
+pub const CHROMATIC_THRESHOLD: f32 = 0.02;
+
 pub struct ImageStats {
     pub mean_l: f32,
+    /// Weighted mean chroma across *all* clusters, including near-black/gray
+    /// ones. Dominated by whatever covers the most pixels -- for a mostly
+    /// dark/desaturated wallpaper with a small vivid accent, this is close
+    /// to zero and a poor reference for "how vivid should colors be".
     pub mean_c: f32,
+    /// Weighted mean chroma across only the chromatic clusters (chroma >=
+    /// `CHROMATIC_THRESHOLD`), falling back to `mean_c` if the image has no
+    /// chromatic content at all. This is what `chroma_clamp_factor` is
+    /// actually applied to -- it answers "how vivid are the colors that
+    /// exist", not "how vivid is the image on average", so a small accent
+    /// region isn't crushed just because most of the image is dark/gray.
+    pub chromatic_mean_c: f32,
     pub is_dark: bool,
 }
 
@@ -137,14 +154,26 @@ pub fn image_stats(clusters: &[Cluster]) -> ImageStats {
     use crate::color::oklab_to_oklch;
     let mut mean_l = 0.0;
     let mut mean_c = 0.0;
+    let mut chromatic_weight = 0.0;
+    let mut chromatic_c_sum = 0.0;
     for c in clusters {
         let lch = oklab_to_oklch(c.oklab);
         mean_l += lch[0] * c.weight;
         mean_c += lch[1] * c.weight;
+        if lch[1] >= CHROMATIC_THRESHOLD {
+            chromatic_weight += c.weight;
+            chromatic_c_sum += lch[1] * c.weight;
+        }
     }
+    let chromatic_mean_c = if chromatic_weight > 0.0 {
+        chromatic_c_sum / chromatic_weight
+    } else {
+        mean_c
+    };
     ImageStats {
         mean_l,
         mean_c,
+        chromatic_mean_c,
         is_dark: mean_l < 0.55,
     }
 }
@@ -176,5 +205,36 @@ mod tests {
         let clusters = kmeans_oklab(&points, 3, 20);
         let total: f32 = clusters.iter().map(|c| c.weight).sum();
         assert!((total - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn chromatic_mean_c_ignores_dominant_achromatic_cluster() {
+        use crate::color::oklch_to_oklab;
+        // Mimics a mostly-black wallpaper with a small vivid accent: the
+        // huge near-zero-chroma cluster should not drag chromatic_mean_c
+        // down the way it drags plain mean_c down.
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.1, 0.0, 0.0]),
+                weight: 0.9,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.5, 0.1, 45.0]),
+                weight: 0.01,
+            },
+        ];
+        let stats = image_stats(&clusters);
+        assert!(stats.mean_c < 0.01);
+        assert!((stats.chromatic_mean_c - 0.1).abs() < 1e-4);
+    }
+
+    #[test]
+    fn chromatic_mean_c_falls_back_to_mean_c_when_fully_achromatic() {
+        let clusters = vec![Cluster {
+            oklab: [0.5, 0.0, 0.0],
+            weight: 1.0,
+        }];
+        let stats = image_stats(&clusters);
+        assert_eq!(stats.chromatic_mean_c, stats.mean_c);
     }
 }

@@ -30,12 +30,21 @@ algorithm quality holds up against real wallpapers.
 ## Usage
 
 ```sh
-# terminal swatch only, no files written -- the fast iteration loop
+# terminal mockup + raw ANSI16 swatch, no files written -- the fast iteration loop
 mise run preview -- ./wallpaper.jpg
 
-# full run: writes primitives.json + semantic.json, also prints swatch
+# full run: writes primitives.json + semantic.json, also prints the preview
 mise run generate -- ./wallpaper.jpg -o ./out
+
+# raw k-means clusters (weight/oklch/hex) + hue anchors -- for diagnosing why a slot matched or didn't
+cargo run -- clusters ./wallpaper.jpg
 ```
+
+`preview`/`generate` print a small terminal mockup (prompt, `ls`, log
+levels, a diff, a code line) using the resolved colors together, since
+isolated swatch blocks make bg/fg contrast and overall feel hard to judge
+in isolation — followed by the raw ANSI16 swatch for precise before/after
+comparison across config tweaks.
 
 Or without mise:
 
@@ -61,13 +70,24 @@ mise run config-path          # print the resolved path
 ```
 
 See `Config` in `src/config.rs` for all fields (cluster count `k`,
-`hue_tolerance`, `chroma_clamp_factor`, `neutral_tint_chroma`, `max_dim`,
-`max_iters`, and an optional `semantic` path to override the default
-role→primitive mapping) — the generated template documents each one inline.
-`hue_tolerance` and `chroma_clamp_factor` are the two most worth tuning per
-wallpaper style: tolerance controls how readily a slot direct-matches vs.
-falls back to hue-rotation, clamp controls how vivid/muted the result reads
-relative to the source image.
+`hue_tolerance`, `min_cluster_weight`, `chroma_clamp_factor`,
+`neutral_tint_chroma`, `max_dim`, `max_iters`, and an optional `semantic`
+path to override the default role→primitive mapping) — the generated
+template documents each one inline. Three are most worth tuning per
+wallpaper style:
+
+- `hue_tolerance` — how readily a slot direct-matches vs. falls back to
+  hue-rotation.
+- `chroma_clamp_factor` — how vivid/muted the result reads relative to the
+  source image's own chromatic content.
+- `min_cluster_weight` — how small a color region can be and still count as
+  a real accent (vs. noise). Matters a lot for stylized/pixel-art wallpapers
+  with small deliberate highlights against a large muted/dark background;
+  too high and the highlight gets ignored in favor of the muted majority.
+
+`a16p clusters <image>` prints the raw k-means clusters (weight, Oklch,
+hex) and the six hue-slot target angles — useful for seeing exactly why a
+slot matched (or didn't) before reaching for these knobs blind.
 
 ## Output
 

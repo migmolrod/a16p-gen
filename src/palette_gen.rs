@@ -1,7 +1,7 @@
 use crate::color::{
     circular_diff, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab, pure_hue_anchor, to_hex,
 };
-use crate::extract::{Cluster, ImageStats};
+use crate::extract::{CHROMATIC_THRESHOLD, Cluster, ImageStats};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -98,23 +98,48 @@ pub fn match_hue(
 }
 
 /// When the image has no real presence near `target_hue`, borrow the most
-/// prominent chromatic cluster and rotate it onto the target hue, keeping
+/// *vivid* qualifying cluster and rotate it onto the target hue, keeping
 /// its lightness (clamped to a workable range) and damping its chroma to
 /// signal lower confidence than a genuine match.
-pub fn fallback_rotate(clusters: &[Cluster], target_hue: f32, stats: &ImageStats) -> [f32; 3] {
-    let prominent = clusters
+///
+/// "Qualifying" reuses `min_weight` -- the same floor `match_hue` uses to
+/// separate real signal from noise -- then picks by chroma, not by weight,
+/// among the survivors. A small but vivid region (a game sprite's
+/// highlight, a lantern glow) is a stronger color signal than a large but
+/// barely-chromatic one (fog, a muted background wash) once both have
+/// cleared the noise floor; picking by weight alone would systematically
+/// prefer the dull, sprawling cluster over the vivid, compact one -- exactly
+/// backwards from what reads as an "accent" color. Weighting by
+/// `weight * chroma` instead of a hard floor was tried and rejected: a 5x
+/// weight gap still beats a 3x chroma gap under that product, so it doesn't
+/// reliably favor vividness either.
+pub fn fallback_rotate(
+    clusters: &[Cluster],
+    target_hue: f32,
+    stats: &ImageStats,
+    min_weight: f32,
+) -> [f32; 3] {
+    let vivid = clusters
         .iter()
-        .filter(|c| oklab_to_oklch(c.oklab)[1] >= 0.02)
-        .max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap());
+        .filter(|c| c.weight >= min_weight && oklab_to_oklch(c.oklab)[1] >= CHROMATIC_THRESHOLD)
+        .max_by(|a, b| {
+            oklab_to_oklch(a.oklab)[1]
+                .partial_cmp(&oklab_to_oklch(b.oklab)[1])
+                .unwrap()
+        });
 
-    let (l, c) = match prominent {
+    let (l, c) = match vivid {
         Some(cluster) => {
             let lch = oklab_to_oklch(cluster.oklab);
             (lch[0].clamp(0.35, 0.75), lch[1].max(0.03))
         }
         None => (stats.mean_l.clamp(0.35, 0.75), stats.mean_c.max(0.05)),
     };
-    [l, (c.min(stats.mean_c.max(0.05) * 1.5)) * 0.8, target_hue]
+    [
+        l,
+        (c.min(stats.chromatic_mean_c.max(0.05) * 1.5)) * 0.8,
+        target_hue,
+    ]
 }
 
 pub fn resolve_hue_slot(
@@ -126,7 +151,7 @@ pub fn resolve_hue_slot(
 ) -> [f32; 3] {
     let target = slot.anchor_hue();
     match_hue(clusters, target, tolerance, min_weight)
-        .unwrap_or_else(|| fallback_rotate(clusters, target, stats))
+        .unwrap_or_else(|| fallback_rotate(clusters, target, stats, min_weight))
 }
 
 /// Weighted circular mean hue across clusters, weighted by weight*chroma so
@@ -222,7 +247,12 @@ impl Default for GenParams {
     fn default() -> Self {
         Self {
             hue_tolerance: 30.0,
-            min_cluster_weight: 0.02,
+            // Low enough that a small-but-deliberate accent region (a
+            // sprite highlight, a lantern glow -- a few hundred pixels in a
+            // downsampled image) still counts as signal. k-means already
+            // absorbs single-pixel/anti-aliasing noise into larger
+            // clusters, so this doesn't need to be a big floor.
+            min_cluster_weight: 0.005,
             chroma_clamp_factor: 1.4,
             neutral_tint_chroma: 0.015,
         }
@@ -234,7 +264,10 @@ pub fn build_primitives(
     stats: &ImageStats,
     params: &GenParams,
 ) -> Primitives {
-    let chroma_cap = stats.mean_c.max(0.02) * params.chroma_clamp_factor;
+    // chromatic_mean_c (not mean_c): a mostly-dark/desaturated image
+    // shouldn't have its accent vividness crushed by pixels that are
+    // achromatic in the first place -- see ImageStats::chromatic_mean_c.
+    let chroma_cap = stats.chromatic_mean_c.max(0.02) * params.chroma_clamp_factor;
 
     let mut ramps: BTreeMap<&'static str, Ramp> = BTreeMap::new();
     for slot in HueSlot::ALL {
@@ -323,10 +356,65 @@ mod tests {
         let stats = ImageStats {
             mean_l: 0.5,
             mean_c: 0.1,
+            chromatic_mean_c: 0.1,
             is_dark: false,
         };
-        let lch = fallback_rotate(&clusters, 29.0, &stats);
+        let lch = fallback_rotate(&clusters, 29.0, &stats, 0.02);
         assert!((lch[2] - 29.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fallback_rotate_prefers_vivid_small_cluster_over_dull_prevalent_one() {
+        // A large muted "fog" cluster and a small vivid "accent" cluster,
+        // both above the min_weight noise floor -- the accent should win on
+        // chroma even though it covers far fewer pixels.
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.3, 0.03, 100.0]),
+                weight: 0.3,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.5, 0.1, 100.0]),
+                weight: 0.01,
+            },
+        ];
+        let stats = ImageStats {
+            mean_l: 0.3,
+            mean_c: 0.02,
+            chromatic_mean_c: 0.04,
+            is_dark: true,
+        };
+        let lch = fallback_rotate(&clusters, 29.0, &stats, 0.005);
+        // Rotated chroma is damped/capped, but should still track the vivid
+        // cluster's L (0.5), not the dull cluster's L (0.3).
+        assert!((lch[0] - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fallback_rotate_ignores_vivid_cluster_below_min_weight() {
+        // A tiny, spuriously-vivid cluster (compression artifact, a couple
+        // stray pixels) shouldn't outrank a properly-sized chromatic
+        // cluster just because it's more saturated.
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.3, 0.03, 100.0]),
+                weight: 0.3,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.5, 0.1, 100.0]),
+                weight: 0.001,
+            },
+        ];
+        let stats = ImageStats {
+            mean_l: 0.3,
+            mean_c: 0.02,
+            chromatic_mean_c: 0.03,
+            is_dark: true,
+        };
+        let lch = fallback_rotate(&clusters, 29.0, &stats, 0.005);
+        // L=0.3 clamped up to the 0.35 floor -- the dull cluster's L, not
+        // the vivid-but-too-small cluster's L=0.5.
+        assert!((lch[0] - 0.35).abs() < 1e-3);
     }
 
     #[test]

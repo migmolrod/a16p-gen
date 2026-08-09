@@ -39,6 +39,12 @@ enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Print raw k-means clusters (weight/oklch/hex) for tuning min_cluster_weight and hue_tolerance
+    Clusters {
+        image: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -100,11 +106,13 @@ fn main() -> Result<()> {
                 out.display(),
                 out.display()
             );
+            preview::print_terminal_mock(&pipeline.resolved);
             preview::print_ansi16(&pipeline.resolved);
         }
         Command::Preview { image, config } => {
             let cfg = Config::load(config.as_deref())?;
             let pipeline = run_pipeline(&image, &cfg)?;
+            preview::print_terminal_mock(&pipeline.resolved);
             preview::print_ansi16(&pipeline.resolved);
         }
         Command::Config { action } => match action {
@@ -126,6 +134,36 @@ fn main() -> Result<()> {
                 println!("wrote {}", path.display());
             }
         },
+        Command::Clusters { image, config } => {
+            let cfg = Config::load(config.as_deref())?;
+            let points = extract::load_and_sample(&image, cfg.max_dim)?;
+            let clusters = extract::kmeans_oklab(&points, cfg.k, cfg.max_iters);
+            let stats = extract::image_stats(&clusters);
+            println!(
+                "mean_l={:.3} mean_c={:.3} is_dark={}",
+                stats.mean_l, stats.mean_c, stats.is_dark
+            );
+            print!("hue anchors:");
+            for slot in palette_gen::HueSlot::ALL {
+                print!(" {}={:.1}", slot.name(), slot.anchor_hue());
+            }
+            println!();
+            let mut sorted = clusters.clone();
+            sorted.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+            println!("{:>7} {:>7} {:>7} {:>7}  hex", "weight", "L", "C", "h");
+            for c in &sorted {
+                let lch = color::oklab_to_oklch(c.oklab);
+                let rgb = color::oklab_to_srgb_u8(c.oklab);
+                println!(
+                    "{:>6.1}% {:>7.3} {:>7.3} {:>7.1}  {}",
+                    c.weight * 100.0,
+                    lch[0],
+                    lch[1],
+                    lch[2],
+                    color::to_hex(rgb)
+                );
+            }
+        }
     }
 
     Ok(())

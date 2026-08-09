@@ -92,13 +92,22 @@ max_dim = {max_dim}
 hue_tolerance = {hue_tolerance}
 
 # Minimum cluster weight (fraction of image pixels, 0..1) required for a
-# hue match to count. Filters out tiny/noisy clusters.
+# hue match to count. Filters real noise, not small deliberate accents --
+# k-means already absorbs single-pixel/anti-aliasing noise into bigger
+# clusters, so this can stay low without letting junk through. Raise it
+# if a stray few-pixel cluster is hijacking a hue slot; lower it if a
+# small accent region (a sprite highlight, a lantern glow) is being
+# ignored in favor of a larger but duller match.
 min_cluster_weight = {min_cluster_weight}
 
-# Ramp chroma is capped at (image's weighted mean chroma * this factor).
-# Lower = safer/more muted colors closer to the wallpaper's actual
-# saturation. Higher = more vivid, more likely to look "off" from the
-# image -- this is the wallust failure mode this tool is meant to avoid.
+# Ramp chroma is capped at (chromatic_mean_c * this factor), where
+# chromatic_mean_c is the weighted mean chroma of only the *chromatic*
+# clusters (near-gray/black clusters don't count) -- so a mostly-dark
+# wallpaper with a small vivid accent doesn't get its accent crushed just
+# because most of the image is achromatic. Lower = safer/more muted
+# colors closer to the wallpaper's actual saturation. Higher = more
+# vivid, more likely to look "off" from the image -- this is the wallust
+# failure mode this tool is meant to avoid.
 chroma_clamp_factor = {chroma_clamp_factor}
 
 # Chroma of the faint hue tint applied to the neutral/background ramp.

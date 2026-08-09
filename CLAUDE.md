@@ -96,6 +96,43 @@ v2, not forgotten scope.
 - `fallback_rotate`'s confidence damping (`* 0.8` chroma) is an arbitrary
   constant, not derived from anything. Tune by eye.
 
+### Fixed: small vivid accents got crushed by weight-based selection
+
+Diagnosed against `~/media/pictures/wallpapers/pixel-art-hollow-knight.jpg`
+(mostly black/dark-gray, a couple small vivid-orange "infection bubble"
+regions, more area of muted-orange "fog"): the resulting ANSI16 was
+uniformly muted, including red/orange, even after tuning
+`chroma_clamp_factor` down. Root cause was weight used as the significance
+proxy in three places at once:
+
+1. `chroma_clamp_factor` was applied to `stats.mean_c` — chroma averaged
+   over *all* clusters, so a 56%-black image drags the reference near zero
+   regardless of how vivid the small accent actually is.
+2. `match_hue`'s `min_cluster_weight` floor (previously 0.02 = 2% of
+   pixels) excluded the vivid bubble clusters (weight ~0.6%/0.2%) even
+   though their hue was *closer* to true red than the larger, duller "fog"
+   cluster that did qualify.
+3. `fallback_rotate` picked the highest-*weight* chromatic cluster, i.e.
+   the same dull fog cluster again, when it should represent "the color
+   that draws the eye," not "the color covering the most pixels."
+
+Fixed by: `ImageStats::chromatic_mean_c` (weighted mean chroma over only
+clusters with chroma ≥ `extract::CHROMATIC_THRESHOLD`, used for
+`chroma_clamp_factor` instead of whole-image `mean_c`); lowering
+`min_cluster_weight`'s default to 0.005 (k-means already absorbs real
+per-pixel noise into larger clusters, so a 2% floor was excluding
+legitimate small design elements, not just noise); and `fallback_rotate`
+now picks the *most vivid* cluster among those clearing the `min_weight`
+floor, not the most prevalent one. See the doc comments on
+`fallback_rotate` and `build_primitives` in `palette_gen.rs` for the exact
+reasoning — kept in-code, not just here, since it's non-obvious.
+
+`a16p clusters <image>` (added alongside this fix) prints raw k-means
+cluster weight/Oklch/hex plus the six hue anchors — the diagnostic tool
+that found this. Reach for it first when a hue slot looks wrong; it shows
+directly whether the issue is "no cluster near that hue" vs "a cluster
+exists but got filtered/outcompeted."
+
 These constants (`hue_tolerance`, `chroma_clamp_factor`, `neutral_tint_chroma`,
 `min_cluster_weight`) are the knobs — see `Config` in `src/config.rs` and
 `GenParams` in `src/palette_gen.rs`. `mise run preview -- ./wallpaper.jpg`
@@ -128,29 +165,40 @@ path without touching anything. Mise wraps these as `config-init` /
 
 - `src/color.rs` — sRGB↔Oklab↔Oklch conversions, gamut clip, hex, circular
   hue distance, pure-primary hue anchor computation. Pure math, unit tested.
-- `src/extract.rs` — image loading/downsampling, k-means, image stats. Unit
-  tested (cluster separation, weight normalization).
-- `src/palette_gen.rs` — hue matching/fallback, ramp generation, primitives
-  assembly. Unit tested (monotonic ramps, chroma cap, hue matching/fallback
-  correctness, anchor spread).
+- `src/extract.rs` — image loading/downsampling, k-means, image stats
+  (`mean_c` vs `chromatic_mean_c`, see rough-edges fix above). Unit tested
+  (cluster separation, weight normalization, chromatic_mean_c behavior).
+- `src/palette_gen.rs` — hue matching/fallback (fallback picks by chroma
+  among clusters clearing `min_weight`, not by weight), ramp generation,
+  primitives assembly. Unit tested (monotonic ramps, chroma cap, hue
+  matching/fallback correctness including the vivid-vs-prevalent case,
+  anchor spread).
 - `src/semantic.rs` — default mapping, resolution logic. Unit tested
   (parses, resolves, `auto:bg`/`auto:fg` pick correctly, unknown ramp errors).
 - `src/config.rs` — `Config` (TOML-loadable, has `Default`), XDG-aware
   `load`, `annotated_default_toml` template, maps to `GenParams`.
 - `src/xdg.rs` — XDG Base Directory config path resolution. Unit tested.
-- `src/preview.rs` — truecolor ANSI escape swatch printer.
-- `src/main.rs` — clap CLI (`generate`, `preview`, `config init`/`path`),
-  wires the pipeline.
+- `src/preview.rs` — `print_ansi16` (raw swatch blocks) and
+  `print_terminal_mock` (prompt/`ls`/log-levels/diff/code-line mockup using
+  the resolved bg/fg/ansi colors together) — isolated color blocks made it
+  hard to judge fg-on-bg contrast and overall feel, the mockup is meant to
+  approximate "does this look like a real terminal."
+- `src/main.rs` — clap CLI (`generate`, `preview`, `config init`/`path`,
+  `clusters` for raw k-means diagnostics), wires the pipeline.
 
 ## Testing
 
-`mise run test` (17 unit tests as of the config/XDG commit, all
+`mise run test` (21 unit tests as of the accent-detection fix, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify
 direct hue matching, and a warm-only gradient to verify the fallback path
 doesn't crash or produce garish output. Recreate similarly if needed
-rather than relying on `find`-ing real wallpapers.
+rather than relying on `find`-ing real wallpapers. For real-wallpaper
+regressions, `a16p clusters <image>` plus `a16p preview <image>` against
+`~/media/pictures/wallpapers/*` is the actual test bed — synthetic images
+didn't surface the weight-vs-vividness bug at all, only a real stylized
+wallpaper did.
 
 When testing XDG path resolution by hand, override `XDG_CONFIG_HOME`
 directly — overriding `HOME` alone does nothing if `XDG_CONFIG_HOME` is
