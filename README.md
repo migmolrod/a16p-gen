@@ -43,8 +43,10 @@ cargo run -- clusters ./wallpaper.jpg
 `preview`/`generate` print a small terminal mockup (prompt, `ls`, log
 levels, a diff, a code line) using the resolved colors together, since
 isolated swatch blocks make bg/fg contrast and overall feel hard to judge
-in isolation — followed by the raw ANSI16 swatch for precise before/after
-comparison across config tweaks.
+in isolation — followed by a `background`/`accent`/`foreground` swatch row
+and the raw ANSI16 swatch for precise before/after comparison across config
+tweaks. "Accent" there is `primary` (see Output below) — the wallpaper's
+vivid, defining color, not just its most common color.
 
 Or without mise:
 
@@ -99,13 +101,17 @@ slot matched (or didn't) before reaching for these knobs blind.
 ## Output
 
 - **`primitives.json`** — generated color ramps: `red`, `yellow`, `green`,
-  `cyan`, `blue`, `magenta`, `neutral`, `accent`. Each ramp has steps
-  `50..950` (Tailwind/PrimeNG-style), each step carrying `hex`, `rgb`,
-  and `oklch`.
+  `cyan`, `blue`, `magenta`, `neutral`, `accent`, `highlight`. Each ramp
+  has steps `50..950` (Tailwind/PrimeNG-style), each step carrying `hex`,
+  `rgb`, and `oklch`. `accent` is the single most *common* cluster (what
+  matugen would extract); `highlight` is the most *vivid* cluster with real
+  presence — for a mostly-dark wallpaper with a small saturated highlight,
+  `accent` is often just a boring dark/gray color, `highlight` is the one
+  that actually reads as "this wallpaper's color."
 - **`semantic.json`** — resolved roles (`ansi_color0`..`ansi_color15`,
-  `background`, `foreground`, `primary`, `success`, `warning`, `danger`,
-  `info`, `surface_*`, `text_*`) as concrete swatches, per the default
-  mapping in `src/semantic.rs::DEFAULT_SEMANTIC_TOML`.
+  `background`, `foreground`, `primary` (→ `highlight.500`), `success`,
+  `warning`, `danger`, `info`, `surface_*`, `text_*`) as concrete swatches,
+  per the default mapping in `src/semantic.rs::DEFAULT_SEMANTIC_TOML`.
 
 ## Development
 

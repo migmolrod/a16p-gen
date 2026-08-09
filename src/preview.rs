@@ -6,9 +6,12 @@ fn bg_block(s: &Swatch) -> String {
 }
 
 pub fn print_ansi16(resolved: &BTreeMap<String, Swatch>) {
-    println!("background/foreground:");
+    println!("background/accent/foreground:");
     if let (Some(bg), Some(fg)) = (resolved.get("background"), resolved.get("foreground")) {
         print!("{}", bg_block(bg));
+        if let Some(accent) = resolved.get("primary") {
+            print!("{}", bg_block(accent));
+        }
         print!("{}", bg_block(fg));
         println!();
     }

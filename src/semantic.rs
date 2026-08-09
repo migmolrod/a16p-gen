@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 /// algorithm. `auto:bg` / `auto:fg` resolve to whichever neutral extreme
 /// matches the detected dark/light mode of the source image.
 pub const DEFAULT_SEMANTIC_TOML: &str = r#"
-primary = "accent.500"
+primary = "highlight.500"
 success = "green.500"
 warning = "yellow.500"
 danger = "red.500"
@@ -120,6 +120,17 @@ mod tests {
         assert_eq!(resolved.len(), mapping.len());
         assert!(resolved.contains_key("ansi_color1"));
         assert!(resolved.contains_key("background"));
+    }
+
+    #[test]
+    fn primary_tracks_vivid_cluster_not_prevalent_one() {
+        // sample_primitives' two clusters: 0.6 weight, low chroma (0.05);
+        // 0.4 weight, higher chroma (0.18) at hue 29. primary should track
+        // the more vivid one despite it being less prevalent -- this is
+        // the whole point of primary mapping to `highlight`, not `accent`.
+        let (primitives, _) = sample_primitives();
+        let primary = primitives.highlight[&500].oklch;
+        assert!((primary[2] - 29.0).abs() < 1.0);
     }
 
     #[test]

@@ -235,7 +235,16 @@ pub struct Primitives {
     pub blue: Ramp,
     pub magenta: Ramp,
     pub neutral: Ramp,
+    /// Prevalence-based (`pick_accent`): the single highest-weight cluster,
+    /// exactly what matugen would extract. Kept for anyone who wants literal
+    /// matugen parity, but this is a poor "accent" for a mostly-dark/muted
+    /// wallpaper with a small vivid highlight -- the most common color there
+    /// is just dark, not a color at all. `highlight` is the useful default.
     pub accent: Ramp,
+    /// Vividness-based (`pick_vivid_accent`): what `primary` maps to by
+    /// default, and what a "this wallpaper's accent color" UI element
+    /// should reach for.
+    pub highlight: Ramp,
 }
 
 impl Primitives {
@@ -249,6 +258,7 @@ impl Primitives {
             "magenta" => Some(&self.magenta),
             "neutral" => Some(&self.neutral),
             "accent" => Some(&self.accent),
+            "highlight" => Some(&self.highlight),
             _ => None,
         }
     }
@@ -321,6 +331,7 @@ pub fn build_primitives(
 
     let accent_anchor = pick_accent(clusters);
     let accent = generate_ramp(accent_anchor, chroma_cap.max(accent_anchor[1]));
+    let highlight = generate_ramp(vivid_accent, chroma_cap.max(vivid_accent[1]));
 
     Primitives {
         red: ramps.remove("red").unwrap(),
@@ -331,6 +342,7 @@ pub fn build_primitives(
         magenta: ramps.remove("magenta").unwrap(),
         neutral,
         accent,
+        highlight,
     }
 }
 

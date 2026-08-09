@@ -35,9 +35,13 @@ v2, not forgotten scope.
 ## Token model (PrimeNG-inspired three tiers)
 
 - **primitive** (`src/palette_gen.rs::Primitives`): generated ramps —
-  `red`/`yellow`/`green`/`cyan`/`blue`/`magenta`/`neutral`/`accent`, each a
-  `BTreeMap<u16, Swatch>` keyed by step `50..950` (lighter → darker). Unlike
-  PrimeNG's static preset ramps, these are generated fresh per wallpaper.
+  `red`/`yellow`/`green`/`cyan`/`blue`/`magenta`/`neutral`/`accent`/
+  `highlight`, each a `BTreeMap<u16, Swatch>` keyed by step `50..950`
+  (lighter → darker). Unlike PrimeNG's static preset ramps, these are
+  generated fresh per wallpaper. `accent` vs `highlight`: prevalence vs
+  vividness, see pipeline section below — this split exists because they
+  gave visibly different, both-useful answers once tested on a real
+  wallpaper, not because it was planned upfront.
 - **semantic** (`src/semantic.rs`): role → `"ramp.step"` string mapping,
   e.g. `ansi_color1 = "red.500"`, `danger = "red.500"`. This is where the
   ANSI semantic contract becomes explicit, editable data instead of an
@@ -81,15 +85,17 @@ v2, not forgotten scope.
      `chroma_taper` (see below) means the effect is subtle right at the
      ramp extremes (`background`/`foreground` = steps 950/50) by design —
      it's much more visible mid-ramp (`surface_card`=900, `surface_border`=700).
-   - `accent` ramp: the single highest-weight cluster, hue-unlocked — this
-     is deliberately *exactly* what matugen extracts, just demoted to one
-     token among many instead of the seed for the whole palette.
-   - `pick_vivid_accent` (used only for the neutral-ramp blend, not
-     `accent`/`primary`) is the most *vivid* cluster clearing
-     `min_cluster_weight`, not the most prevalent one — same reasoning as
-     the fallback fix below. Kept separate from `pick_accent` deliberately:
-     that one's prevalence-based contract is already documented/relied on
-     for the `primary` semantic token, so its meaning wasn't changed.
+   - `accent` ramp (`pick_accent`): the single highest-weight cluster,
+     hue-unlocked — this is deliberately *exactly* what matugen extracts.
+     For a mostly-dark/muted wallpaper, the most-prevalent color is often
+     just dark/gray, not a color at all — `accent` is kept for anyone who
+     wants literal matugen parity, but nothing in the default semantic
+     mapping points at it.
+   - `highlight` ramp (`pick_vivid_accent`): the most *vivid* cluster
+     clearing `min_cluster_weight`, not the most prevalent one — same
+     reasoning as the `fallback_rotate` fix below, and shares its
+     `most_vivid` helper. This is what `primary` maps to by default, and
+     what the preview's "accent" swatch shows.
 5. `semantic::resolve` — parse `DEFAULT_SEMANTIC_TOML` (or user override via
    `Config::semantic` path), look up each `"ramp.step"` / `auto:*` value
    against the primitives, produce concrete `Swatch`es.
@@ -144,6 +150,21 @@ cluster weight/Oklch/hex plus the six hue anchors — the diagnostic tool
 that found this. Reach for it first when a hue slot looks wrong; it shows
 directly whether the issue is "no cluster near that hue" vs "a cluster
 exists but got filtered/outcompeted."
+
+### Fixed: `primary`/preview accent was gray on the same wallpaper this whole fix was about
+
+After adding `pick_vivid_accent` for the neutral-ramp blend, added an
+accent swatch to `preview` (`background`/`accent`/`foreground`) pulling
+from the `primary` semantic role — which still mapped to `accent.500`
+(`pick_accent`, prevalence-based). For hollow-knight, the single most
+*prevalent* cluster is near-black (29.5% weight, ~0 chroma), so `primary`
+resolved to flat gray `#6b6b6b` — the exact vivid-vs-prevalent trap this
+whole fix arc was about, just in the one token that hadn't been touched
+yet. Fixed by adding the `highlight` primitive (`pick_vivid_accent`,
+reusing the value already computed for the neutral blend) and repointing
+`primary = "highlight.500"` in `DEFAULT_SEMANTIC_TOML`. `accent` itself
+was left alone — still prevalence-based, still there if literal matugen
+parity is ever wanted for something.
 
 ### Accent-tinted bg/fg (`neutral_accent_influence`)
 
@@ -201,7 +222,8 @@ path without touching anything. Mise wraps these as `config-init` /
 - `src/config.rs` — `Config` (TOML-loadable, has `Default`), XDG-aware
   `load`, `annotated_default_toml` template, maps to `GenParams`.
 - `src/xdg.rs` — XDG Base Directory config path resolution. Unit tested.
-- `src/preview.rs` — `print_ansi16` (raw swatch blocks) and
+- `src/preview.rs` — `print_ansi16` (`background`/`accent`/`foreground` row,
+  where accent = `resolved["primary"]`, then the raw ANSI16 swatch) and
   `print_terminal_mock` (prompt/`ls`/log-levels/diff/code-line mockup using
   the resolved bg/fg/ansi colors together) — isolated color blocks made it
   hard to judge fg-on-bg contrast and overall feel, the mockup is meant to
@@ -211,7 +233,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (27 unit tests as of the accent-influence feature, all
+`mise run test` (28 unit tests as of the accent/highlight split, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify
