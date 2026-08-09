@@ -1,5 +1,6 @@
 use crate::color::{
-    circular_diff, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab, pure_hue_anchor, to_hex,
+    circular_diff, lerp_hue, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab, pure_hue_anchor,
+    to_hex,
 };
 use crate::extract::{CHROMATIC_THRESHOLD, Cluster, ImageStats};
 use serde::Serialize;
@@ -97,36 +98,40 @@ pub fn match_hue(
     best.map(|(_, lch)| lch)
 }
 
+/// The most *vivid* cluster clearing `min_weight` -- the same "real signal,
+/// not noise" floor `match_hue` uses -- rather than the most prevalent one.
+/// A small but vivid region (a game sprite's highlight, a lantern glow) is
+/// a stronger color signal than a large but barely-chromatic one (fog, a
+/// muted background wash) once both have cleared the noise floor; picking
+/// by weight alone would systematically prefer the dull, sprawling cluster
+/// over the vivid, compact one -- exactly backwards from what reads as an
+/// "accent" color. Weighting by `weight * chroma` instead of a hard floor
+/// was tried and rejected: a 5x weight gap still beats a 3x chroma gap
+/// under that product, so it doesn't reliably favor vividness either.
+/// Shared by `fallback_rotate` and `pick_vivid_accent`.
+fn most_vivid(clusters: &[Cluster], min_weight: f32) -> Option<Cluster> {
+    clusters
+        .iter()
+        .copied()
+        .filter(|c| c.weight >= min_weight && oklab_to_oklch(c.oklab)[1] >= CHROMATIC_THRESHOLD)
+        .max_by(|a, b| {
+            oklab_to_oklch(a.oklab)[1]
+                .partial_cmp(&oklab_to_oklch(b.oklab)[1])
+                .unwrap()
+        })
+}
+
 /// When the image has no real presence near `target_hue`, borrow the most
-/// *vivid* qualifying cluster and rotate it onto the target hue, keeping
-/// its lightness (clamped to a workable range) and damping its chroma to
-/// signal lower confidence than a genuine match.
-///
-/// "Qualifying" reuses `min_weight` -- the same floor `match_hue` uses to
-/// separate real signal from noise -- then picks by chroma, not by weight,
-/// among the survivors. A small but vivid region (a game sprite's
-/// highlight, a lantern glow) is a stronger color signal than a large but
-/// barely-chromatic one (fog, a muted background wash) once both have
-/// cleared the noise floor; picking by weight alone would systematically
-/// prefer the dull, sprawling cluster over the vivid, compact one -- exactly
-/// backwards from what reads as an "accent" color. Weighting by
-/// `weight * chroma` instead of a hard floor was tried and rejected: a 5x
-/// weight gap still beats a 3x chroma gap under that product, so it doesn't
-/// reliably favor vividness either.
+/// vivid qualifying cluster (see `most_vivid`) and rotate it onto the
+/// target hue, keeping its lightness (clamped to a workable range) and
+/// damping its chroma to signal lower confidence than a genuine match.
 pub fn fallback_rotate(
     clusters: &[Cluster],
     target_hue: f32,
     stats: &ImageStats,
     min_weight: f32,
 ) -> [f32; 3] {
-    let vivid = clusters
-        .iter()
-        .filter(|c| c.weight >= min_weight && oklab_to_oklch(c.oklab)[1] >= CHROMATIC_THRESHOLD)
-        .max_by(|a, b| {
-            oklab_to_oklch(a.oklab)[1]
-                .partial_cmp(&oklab_to_oklch(b.oklab)[1])
-                .unwrap()
-        });
+    let vivid = most_vivid(clusters, min_weight);
 
     let (l, c) = match vivid {
         Some(cluster) => {
@@ -179,6 +184,19 @@ pub fn pick_accent(clusters: &[Cluster]) -> [f32; 3] {
         .max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap())
         .map(|c| oklab_to_oklch(c.oklab))
         .expect("clusters is non-empty")
+}
+
+/// The wallpaper's "defining" color for tinting bg/fg: most vivid cluster
+/// clearing `min_weight` (see `most_vivid`), not most prevalent. Deliberately
+/// separate from `pick_accent` -- that one stays prevalence-based (matugen-
+/// equivalent) for the `accent`/`primary` token, since changing its meaning
+/// would be a breaking change to an already-documented contract. Falls back
+/// to `pick_accent` if nothing clears the chromatic threshold, so a
+/// genuinely near-monochrome image still gets *a* hue rather than none.
+pub fn pick_vivid_accent(clusters: &[Cluster], min_weight: f32) -> [f32; 3] {
+    most_vivid(clusters, min_weight)
+        .map(|c| oklab_to_oklch(c.oklab))
+        .unwrap_or_else(|| pick_accent(clusters))
 }
 
 pub const RAMP_STEPS: [u16; 11] = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
@@ -241,6 +259,7 @@ pub struct GenParams {
     pub min_cluster_weight: f32,
     pub chroma_clamp_factor: f32,
     pub neutral_tint_chroma: f32,
+    pub neutral_accent_influence: f32,
 }
 
 impl Default for GenParams {
@@ -255,6 +274,12 @@ impl Default for GenParams {
             min_cluster_weight: 0.005,
             chroma_clamp_factor: 1.4,
             neutral_tint_chroma: 0.015,
+            // 0 = bg/fg stay flat gray (matches pre-this-field behavior
+            // exactly). Opt-in, not on by default: this is a judgment call
+            // about how much personality the background should have, and
+            // going too high reintroduces matugen's "everything is one
+            // hue" problem, just relocated to bg/fg.
+            neutral_accent_influence: 0.0,
         }
     }
 }
@@ -281,11 +306,18 @@ pub fn build_primitives(
         ramps.insert(slot.name(), generate_ramp(anchor, chroma_cap));
     }
 
-    let neutral_hue = weighted_mean_hue(clusters);
-    let neutral = generate_ramp(
-        [0.5, params.neutral_tint_chroma, neutral_hue],
-        params.neutral_tint_chroma,
-    );
+    // bg/fg tint: blend from the flat average-hue/fixed-chroma baseline
+    // (influence=0, original behavior) toward the wallpaper's vivid accent
+    // (influence=1) -- see pick_vivid_accent's doc comment for why "vivid"
+    // and not "prevalent" is the right notion of accent here.
+    let base_hue = weighted_mean_hue(clusters);
+    let influence = params.neutral_accent_influence.clamp(0.0, 1.0);
+    let vivid_accent = pick_vivid_accent(clusters, params.min_cluster_weight);
+    let neutral_hue = lerp_hue(base_hue, vivid_accent[2], influence);
+    let vivid_chroma = vivid_accent[1].min(chroma_cap);
+    let neutral_chroma = params.neutral_tint_chroma
+        + (vivid_chroma - params.neutral_tint_chroma).max(0.0) * influence;
+    let neutral = generate_ramp([0.5, neutral_chroma, neutral_hue], neutral_chroma);
 
     let accent_anchor = pick_accent(clusters);
     let accent = generate_ramp(accent_anchor, chroma_cap.max(accent_anchor[1]));
@@ -415,6 +447,94 @@ mod tests {
         // L=0.3 clamped up to the 0.35 floor -- the dull cluster's L, not
         // the vivid-but-too-small cluster's L=0.5.
         assert!((lch[0] - 0.35).abs() < 1e-3);
+    }
+
+    #[test]
+    fn pick_vivid_accent_prefers_vivid_over_prevalent() {
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.3, 0.03, 100.0]),
+                weight: 0.5,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.5, 0.1, 40.0]),
+                weight: 0.02,
+            },
+        ];
+        let lch = pick_vivid_accent(&clusters, 0.005);
+        assert!((lch[2] - 40.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn pick_vivid_accent_falls_back_to_pick_accent_when_fully_achromatic() {
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.3, 0.0, 0.0]),
+                weight: 0.7,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.6, 0.0, 0.0]),
+                weight: 0.3,
+            },
+        ];
+        let lch = pick_vivid_accent(&clusters, 0.005);
+        assert!((lch[0] - 0.3).abs() < 1e-3);
+    }
+
+    #[test]
+    fn neutral_accent_influence_zero_matches_flat_baseline() {
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.5, 0.15, 40.0]),
+                weight: 0.05,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.2, 0.0, 0.0]),
+                weight: 0.95,
+            },
+        ];
+        let stats = ImageStats {
+            mean_l: 0.25,
+            mean_c: 0.01,
+            chromatic_mean_c: 0.15,
+            is_dark: true,
+        };
+        let params = GenParams {
+            neutral_accent_influence: 0.0,
+            ..GenParams::default()
+        };
+        let primitives = build_primitives(&clusters, &stats, &params);
+        let n500 = &primitives.neutral[&500];
+        let expected = params.neutral_tint_chroma * chroma_taper(lightness_for_step(500));
+        assert!((n500.oklch[1] - expected).abs() < 1e-4);
+    }
+
+    #[test]
+    fn neutral_accent_influence_one_tracks_vivid_accent_hue() {
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.5, 0.15, 40.0]),
+                weight: 0.05,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.2, 0.0, 0.0]),
+                weight: 0.95,
+            },
+        ];
+        let stats = ImageStats {
+            mean_l: 0.25,
+            mean_c: 0.01,
+            chromatic_mean_c: 0.15,
+            is_dark: true,
+        };
+        let params = GenParams {
+            neutral_accent_influence: 1.0,
+            ..GenParams::default()
+        };
+        let primitives = build_primitives(&clusters, &stats, &params);
+        let n500 = &primitives.neutral[&500];
+        assert!(circular_diff(n500.oklch[2], 40.0).abs() < 1.0);
+        assert!(n500.oklch[1] > params.neutral_tint_chroma);
     }
 
     #[test]

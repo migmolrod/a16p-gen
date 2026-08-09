@@ -13,6 +13,7 @@ pub struct Config {
     pub min_cluster_weight: f32,
     pub chroma_clamp_factor: f32,
     pub neutral_tint_chroma: f32,
+    pub neutral_accent_influence: f32,
     pub semantic: Option<String>,
 }
 
@@ -27,6 +28,7 @@ impl Default for Config {
             min_cluster_weight: defaults.min_cluster_weight,
             chroma_clamp_factor: defaults.chroma_clamp_factor,
             neutral_tint_chroma: defaults.neutral_tint_chroma,
+            neutral_accent_influence: defaults.neutral_accent_influence,
             semantic: None,
         }
     }
@@ -62,6 +64,7 @@ impl Config {
             min_cluster_weight: self.min_cluster_weight,
             chroma_clamp_factor: self.chroma_clamp_factor,
             neutral_tint_chroma: self.neutral_tint_chroma,
+            neutral_accent_influence: self.neutral_accent_influence,
         }
     }
 
@@ -110,9 +113,19 @@ min_cluster_weight = {min_cluster_weight}
 # failure mode this tool is meant to avoid.
 chroma_clamp_factor = {chroma_clamp_factor}
 
-# Chroma of the faint hue tint applied to the neutral/background ramp.
+# Chroma of the neutral/background ramp's baseline hue tint (used at
+# neutral_accent_influence=0, and as the floor even above that).
 # 0 = pure gray backgrounds; higher = more visibly tinted by the wallpaper.
 neutral_tint_chroma = {neutral_tint_chroma}
+
+# How much bg/fg should be pulled toward the wallpaper's vivid accent
+# color (most saturated cluster with real presence, not just the most
+# common one), from 0 (flat gray tint, ignores the accent entirely) to 1
+# (bg/fg hue and chroma track the accent directly). This is a judgment
+# call, not something to default aggressively: too high and you're back to
+# matugen's "everything is one hue" problem, just relocated to bg/fg
+# instead of the ANSI colors. Start around 0.3-0.5 and adjust by eye.
+neutral_accent_influence = {neutral_accent_influence}
 
 # Optional path to a custom semantic role -> primitive mapping TOML file,
 # overriding the built-in default (src/semantic.rs::DEFAULT_SEMANTIC_TOML).
@@ -125,6 +138,7 @@ neutral_tint_chroma = {neutral_tint_chroma}
             min_cluster_weight = d.min_cluster_weight,
             chroma_clamp_factor = d.chroma_clamp_factor,
             neutral_tint_chroma = d.neutral_tint_chroma,
+            neutral_accent_influence = d.neutral_accent_influence,
         )
     }
 }

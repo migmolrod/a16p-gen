@@ -52,6 +52,12 @@ pub fn pure_hue_anchor(rgb: [u8; 3]) -> f32 {
     oklab_to_oklch(lab)[2]
 }
 
+/// Interpolate from hue `a` toward hue `b` along the shorter arc, `t` in
+/// [0, 1]. `t=0` stays at `a`, `t=1` lands exactly on `b`.
+pub fn lerp_hue(a: f32, b: f32, t: f32) -> f32 {
+    (a + circular_diff(a, b) * t).rem_euclid(360.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +77,19 @@ mod tests {
         assert!((lab[0] - back[0]).abs() < 1e-4);
         assert!((lab[1] - back[1]).abs() < 1e-4);
         assert!((lab[2] - back[2]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn lerp_hue_endpoints() {
+        assert!((lerp_hue(10.0, 100.0, 0.0) - 10.0).abs() < 1e-3);
+        assert!((lerp_hue(10.0, 100.0, 1.0) - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn lerp_hue_takes_shorter_arc_across_the_wrap() {
+        // 350 -> 10 is a 20-degree hop through 0, not a 340-degree one.
+        let mid = lerp_hue(350.0, 10.0, 0.5);
+        assert!((mid - 0.0).abs() < 1e-3 || (mid - 360.0).abs() < 1e-3);
     }
 
     #[test]

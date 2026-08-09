@@ -71,13 +71,25 @@ v2, not forgotten scope.
      950→L≈0.15, **same curve for every hue** — see "Known rough edges"
      below), chroma capped by `stats.mean_c * chroma_clamp_factor` and
      tapered near the lightness extremes to reduce gamut clipping.
-   - `neutral` ramp: near-zero chroma, hue = weighted circular mean hue
-     across all clusters (weighted by `weight * chroma` so gray clusters
-     don't skew the estimate) — gives bg/fg a faint image-matched tint
-     instead of true gray.
+   - `neutral` ramp: hue/chroma blended between a flat baseline (weighted
+     circular mean hue across all clusters, fixed `neutral_tint_chroma`)
+     and the wallpaper's *vivid* accent (`pick_vivid_accent`), via
+     `neutral_accent_influence` (0 = flat baseline exactly, 1 = fully
+     accent-tinted). Default 0 — opt-in, since how much personality bg/fg
+     should have is a judgment call, and turning it up too far reintroduces
+     matugen's "everything is one hue" problem, just relocated to bg/fg.
+     `chroma_taper` (see below) means the effect is subtle right at the
+     ramp extremes (`background`/`foreground` = steps 950/50) by design —
+     it's much more visible mid-ramp (`surface_card`=900, `surface_border`=700).
    - `accent` ramp: the single highest-weight cluster, hue-unlocked — this
      is deliberately *exactly* what matugen extracts, just demoted to one
      token among many instead of the seed for the whole palette.
+   - `pick_vivid_accent` (used only for the neutral-ramp blend, not
+     `accent`/`primary`) is the most *vivid* cluster clearing
+     `min_cluster_weight`, not the most prevalent one — same reasoning as
+     the fallback fix below. Kept separate from `pick_accent` deliberately:
+     that one's prevalence-based contract is already documented/relied on
+     for the `primary` semantic token, so its meaning wasn't changed.
 5. `semantic::resolve` — parse `DEFAULT_SEMANTIC_TOML` (or user override via
    `Config::semantic` path), look up each `"ramp.step"` / `auto:*` value
    against the primitives, produce concrete `Swatch`es.
@@ -133,15 +145,26 @@ that found this. Reach for it first when a hue slot looks wrong; it shows
 directly whether the issue is "no cluster near that hue" vs "a cluster
 exists but got filtered/outcompeted."
 
+### Accent-tinted bg/fg (`neutral_accent_influence`)
+
+One of matugen's actually-liked traits was accent-derived backgrounds
+(vs. this tool's originally-flat neutral gray). Rather than rebuild that
+as a different architecture, it's the same primitive/semantic model: the
+`neutral` ramp's generation was extended to optionally blend toward
+`pick_vivid_accent` (see pipeline section above). No new token tier, no
+branch needed — this is why the three-tier model was worth having.
+
 These constants (`hue_tolerance`, `chroma_clamp_factor`, `neutral_tint_chroma`,
-`min_cluster_weight`) are the knobs — see `Config` in `src/config.rs` and
-`GenParams` in `src/palette_gen.rs`. `mise run preview -- ./wallpaper.jpg`
-is the fast loop for eyeballing changes; there's no automated "looks good"
-check because that's inherently a perceptual judgment call.
+`min_cluster_weight`, `neutral_accent_influence`) are the knobs — see
+`Config` in `src/config.rs` and `GenParams` in `src/palette_gen.rs`.
+`mise run preview -- ./wallpaper.jpg` is the fast loop for eyeballing
+changes; there's no automated "looks good" check because that's inherently
+a perceptual judgment call.
 
 Every `Config` field is tunable via a TOML file rather than editing
-constants in source — see "Config file" below. `hue_tolerance` and
-`chroma_clamp_factor` are the ones actually worth iterating on per
+constants in source — see "Config file" below. `hue_tolerance`,
+`chroma_clamp_factor`, `min_cluster_weight`, and now
+`neutral_accent_influence` are the ones actually worth iterating on per
 wallpaper; the rest rarely need touching.
 
 ## Config file (XDG)
@@ -188,7 +211,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (21 unit tests as of the accent-detection fix, all
+`mise run test` (27 unit tests as of the accent-influence feature, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify

@@ -71,10 +71,10 @@ mise run config-path          # print the resolved path
 
 See `Config` in `src/config.rs` for all fields (cluster count `k`,
 `hue_tolerance`, `min_cluster_weight`, `chroma_clamp_factor`,
-`neutral_tint_chroma`, `max_dim`, `max_iters`, and an optional `semantic`
-path to override the default role→primitive mapping) — the generated
-template documents each one inline. Three are most worth tuning per
-wallpaper style:
+`neutral_tint_chroma`, `neutral_accent_influence`, `max_dim`, `max_iters`,
+and an optional `semantic` path to override the default role→primitive
+mapping) — the generated template documents each one inline. Four are
+most worth tuning per wallpaper style:
 
 - `hue_tolerance` — how readily a slot direct-matches vs. falls back to
   hue-rotation.
@@ -84,6 +84,13 @@ wallpaper style:
   a real accent (vs. noise). Matters a lot for stylized/pixel-art wallpapers
   with small deliberate highlights against a large muted/dark background;
   too high and the highlight gets ignored in favor of the muted majority.
+- `neutral_accent_influence` (0..1, default 0) — how much bg/fg get pulled
+  toward the wallpaper's vivid accent color instead of staying flat gray.
+  0 = flat (original behavior); higher = more matugen-like accent-tinted
+  backgrounds. The effect is intentionally subtle right at `background`/
+  `foreground` themselves (chroma is damped near the ramp's extremes to
+  avoid ugly saturated near-black clipping) — check `surface_card`/
+  `surface_border` in `semantic.json` for the more visible mid-ramp tint.
 
 `a16p clusters <image>` prints the raw k-means clusters (weight, Oklch,
 hex) and the six hue-slot target angles — useful for seeing exactly why a
