@@ -103,12 +103,42 @@ v2, not forgotten scope.
 
 ## Known rough edges (expected iteration, not bugs to silently "fix")
 
-- Gamut handling is naive clamping (`color::oklab_to_srgb_u8` clips r/g/b to
-  `[0,1]` after conversion) rather than proper gamut mapping (reducing
-  chroma until in-gamut). Fine for v1; revisit if clipped colors look
-  visibly desaturated/wrong on saturated wallpapers.
 - `fallback_rotate`'s confidence damping (`* 0.8` chroma) is an arbitrary
   constant, not derived from anything. Tune by eye.
+
+### Fixed: naive per-channel gamut clamping instead of proper gamut mapping
+
+`color::oklab_to_srgb_u8` used to clip r/g/b independently to `[0,1]` after
+conversion. That shifts hue and perceived lightness by an uncontrolled
+amount, since each channel gets clamped by a different fraction — visibly
+wrong on saturated wallpapers, and more likely to bite after the
+`hue_lightness_bend` fix above, since bending deliberately pushes some
+hues' mid-ramp steps toward lightnesses where their available chroma is
+lower.
+
+Fixed by `color::gamut_map_oklch`: if an Oklch color is out of the sRGB
+gamut, binary-search its chroma down (holding L and hue fixed) until it
+isn't, the standard "hold L/H, back off C" gamut-mapping approach.
+`oklab_to_srgb_u8` now gamut-maps before converting; the old per-channel
+`.clamp(0.0, 1.0)` stays as a final float-rounding safety net, which should
+be a no-op in practice.
+
+Finding this needed one real bug fix first: the initial `in_gamut` check
+used `oklab.into_color()`, `palette`'s "safe" conversion trait — which
+already clamps its output internally, making an in-`[0,1]` check on its
+result a tautology that's always true. That's also why an earlier attempt
+at a numeric peak-chroma-lightness search for `peak_lightness_for_hue`
+(above) seemed to hit an unfixable "asymptote" and got abandoned in favor
+of 6-point interpolation — same root cause, not a real math limitation.
+Confirmed by testing pure red's own known boundary chroma (~0.258 at its
+own L≈0.628): `into_color()`-based `in_gamut` reported chroma 0.5 as
+in-gamut at that same L (wrong); `into_color_unclamped()` correctly finds
+the real crossing. `gamut_map_oklch`'s binary search uses
+`into_color_unclamped()` and is bounded at `hi=original_chroma` (chroma 0
+is always in-gamut, so `[0, original_chroma]` always brackets a real
+crossing) — the interpolation approach for `peak_lightness_for_hue` was
+kept as-is regardless, since it's simpler/cheaper and accurate enough for
+a curve bend, not a precision gamut map.
 
 ### Fixed: hue-agnostic lightness curve made vivid yellow read as olive/brown
 
@@ -244,8 +274,10 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Module map
 
-- `src/color.rs` — sRGB↔Oklab↔Oklch conversions, gamut clip, hex, circular
-  hue distance, pure-primary hue anchor computation. Pure math, unit tested.
+- `src/color.rs` — sRGB↔Oklab↔Oklch conversions, gamut mapping
+  (`gamut_map_oklch`, chroma-reduction not per-channel clipping -- see
+  "Fixed" above), hex, circular hue distance, pure-primary corner
+  computation. Pure math, unit tested.
 - `src/extract.rs` — image loading/downsampling, k-means, image stats
   (`mean_c` vs `chromatic_mean_c`, see rough-edges fix above). Unit tested
   (cluster separation, weight normalization, chromatic_mean_c behavior).
@@ -270,7 +302,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (32 unit tests as of the hue-lightness-bend fix, all
+`mise run test` (35 unit tests as of the gamut-mapping fix, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify
