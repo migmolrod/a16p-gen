@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "a16p-gen config",
+  "description": "Config for a16p-gen (~/.config/a16p-gen/config.toml). All fields optional -- omitted fields keep their default. See src/config.rs::Config.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path/URL to this schema file, for editor tooling (taplo etc)."
+    },
+    "k": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 16,
+      "description": "Number of k-means clusters extracted from the image in Oklab space. More clusters = finer color detail but slower, noisier hue matching."
+    },
+    "max_iters": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 20,
+      "description": "Max Lloyd's-algorithm iterations for k-means convergence."
+    },
+    "max_dim": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 200,
+      "description": "Longest-side pixel size the image is downsampled to before clustering. Bigger = more accurate sampling, slower."
+    },
+    "hue_tolerance": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 180,
+      "default": 30.0,
+      "description": "Max degrees a cluster's hue may differ from a target ANSI hue and still count as a direct match. Lower = only very close hues match, more images fall back to hue rotation. Higher = looser matches, risks calling orange \"red\"."
+    },
+    "min_cluster_weight": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.005,
+      "description": "Minimum cluster weight (fraction of image pixels, 0..1) required for a hue match to count."
+    },
+    "chroma_clamp_factor": {
+      "type": "number",
+      "minimum": 0,
+      "default": 1.4,
+      "description": "Ramp chroma is capped at (chromatic_mean_c * this factor). Lower = safer/more muted colors closer to the wallpaper's actual saturation. Higher = more vivid, more likely to look \"off\" from the image."
+    },
+    "neutral_tint_chroma": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0.015,
+      "description": "Chroma of the neutral/background ramp's baseline hue tint. 0 = pure gray backgrounds; higher = more visibly tinted by the wallpaper."
+    },
+    "neutral_accent_influence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.0,
+      "description": "How much bg/fg should be pulled toward the wallpaper's vivid accent color, 0 (flat gray tint) to 1 (bg/fg hue/chroma track the accent directly)."
+    },
+    "hue_lightness_bend": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.7,
+      "description": "Bends each ramp's step 500 toward its hue's peak-chroma lightness. 0 = every hue forced through the same lightness curve, 1 = step 500 lands exactly on the hue's peak."
+    },
+    "semantic": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Optional path to a custom semantic role -> primitive mapping TOML file, overriding src/semantic.rs::DEFAULT_SEMANTIC_TOML."
+    },
+    "component": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Optional path to a custom component -> semantic role mapping TOML file, overriding src/component.rs::DEFAULT_COMPONENT_TOML."
+    }
+  }
+}
