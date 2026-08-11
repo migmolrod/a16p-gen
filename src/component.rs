@@ -93,8 +93,8 @@ mod tests {
         };
         let primitives =
             crate::palette_gen::build_primitives(&clusters, &stats, &GenParams::default());
-        let mapping = crate::semantic::parse_mapping(crate::semantic::DEFAULT_SEMANTIC_TOML)
-            .unwrap();
+        let mapping =
+            crate::semantic::parse_mapping(crate::semantic::DEFAULT_SEMANTIC_TOML).unwrap();
         crate::semantic::resolve(&mapping, &primitives, &stats).unwrap()
     }
 

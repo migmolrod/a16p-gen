@@ -123,16 +123,26 @@ pub fn peak_lightness_for_hue(hue: f32) -> f32 {
     anchors[0].1
 }
 
-/// Nearest weighted cluster to `target_hue` within `tolerance` degrees and
-/// carrying at least `min_weight` share of the image. Skips near-neutral
-/// clusters since a gray pixel's hue angle is noise, not signal.
+/// Most *vivid* (highest-chroma) weighted cluster within `tolerance` degrees
+/// of `target_hue`, carrying at least `min_weight` share of the image. Skips
+/// near-neutral clusters since a gray pixel's hue angle is noise, not signal.
+///
+/// Picks by chroma, not nearest angle: nearest-angle-wins let a weak, barely-
+/// qualifying cluster (technically in tolerance but low chroma) outrank a
+/// more vivid cluster just a few degrees farther off, producing a *more*
+/// muted color than `fallback_rotate` would've given for a non-match at all
+/// -- `fallback_rotate` already picks by vividness and confidence-damps by
+/// distance, so a "weak real match" could end up worse than "no match."
+/// Widening `hue_tolerance` to fix muted colors made this worse in practice,
+/// not better: it let more weak clusters qualify as full-confidence "real"
+/// matches, displacing the vividness-aware fallback path entirely.
 pub fn match_hue(
     clusters: &[Cluster],
     target_hue: f32,
     tolerance: f32,
     min_weight: f32,
 ) -> Option<[f32; 3]> {
-    let mut best: Option<(f32, [f32; 3])> = None;
+    let mut best: Option<[f32; 3]> = None;
     for c in clusters {
         if c.weight < min_weight {
             continue;
@@ -142,11 +152,11 @@ pub fn match_hue(
             continue;
         }
         let d = circular_diff(target_hue, lch[2]).abs();
-        if d <= tolerance && best.map(|(bd, _)| d < bd).unwrap_or(true) {
-            best = Some((d, lch));
+        if d <= tolerance && best.map(|b| lch[1] > b[1]).unwrap_or(true) {
+            best = Some(lch);
         }
     }
-    best.map(|(_, lch)| lch)
+    best
 }
 
 /// The most *vivid* cluster clearing `min_weight` -- the same "real signal,
@@ -339,6 +349,38 @@ fn chroma_taper(l: f32) -> f32 {
 }
 
 pub fn generate_ramp(anchor_lch: [f32; 3], chroma_cap: f32, hue_lightness_bend: f32) -> Ramp {
+    generate_ramp_inner(anchor_lch, chroma_cap, hue_lightness_bend, true)
+}
+
+/// Like `generate_ramp` but skips `chroma_taper`. `chroma_taper` exists to
+/// keep vivid *chromatic* ramps (red/yellow/green/...) from relying on
+/// out-of-gamut chroma near the ramp's extremes -- but the neutral ramp's
+/// chroma is tiny by design (`neutral_tint_chroma` default 0.015, an order
+/// of magnitude under any real hue's gamut boundary ~0.2+), so it was never
+/// at gamut-clipping risk in the first place. Applying the same extreme-step
+/// crush there just defeats `neutral_accent_influence` at bg/color0 --
+/// `auto:bg`/`ansi_color0` resolve to the ramp's darkest step (950 for dark
+/// wallpapers), exactly where the taper bites hardest, while `ansi_color7`/
+/// `ansi_color8` (mid-ramp steps 300/600, taper barely applies) visibly show
+/// the tint -- same knob, wildly different visible effect depending on which
+/// step a role happens to sit at. `gamut_map_oklch` (applied downstream in
+/// `swatch_from_oklch`) is still the real safety net for genuine
+/// out-of-gamut colors, so removing the extra taper here doesn't reopen the
+/// clipping problem the taper was originally added for.
+pub fn generate_neutral_ramp(
+    anchor_lch: [f32; 3],
+    chroma_cap: f32,
+    hue_lightness_bend: f32,
+) -> Ramp {
+    generate_ramp_inner(anchor_lch, chroma_cap, hue_lightness_bend, false)
+}
+
+fn generate_ramp_inner(
+    anchor_lch: [f32; 3],
+    chroma_cap: f32,
+    hue_lightness_bend: f32,
+    taper: bool,
+) -> Ramp {
     let hue = anchor_lch[2];
     let base_chroma = anchor_lch[1].min(chroma_cap);
     RAMP_STEPS
@@ -351,7 +393,11 @@ pub fn generate_ramp(anchor_lch: [f32; 3], chroma_cap: f32, hue_lightness_bend: 
             // (e.g. yellow's step 500 moving to L≈0.84) gets read by the
             // taper as "near an extreme" and crushes exactly the chroma
             // the bend was meant to preserve.
-            let c = base_chroma * chroma_taper(lightness_for_step(step));
+            let c = if taper {
+                base_chroma * chroma_taper(lightness_for_step(step))
+            } else {
+                base_chroma
+            };
             (step, swatch_from_oklch([l, c, hue]))
         })
         .collect()
@@ -470,7 +516,7 @@ pub fn build_primitives(
     let vivid_chroma = vivid_accent[1].min(chroma_cap);
     let neutral_chroma = params.neutral_tint_chroma
         + (vivid_chroma - params.neutral_tint_chroma).max(0.0) * influence;
-    let neutral = generate_ramp(
+    let neutral = generate_neutral_ramp(
         [0.5, neutral_chroma, neutral_hue],
         neutral_chroma,
         params.hue_lightness_bend,
@@ -565,6 +611,28 @@ mod tests {
         ];
         let found = match_hue(&clusters, 29.0, 30.0, 0.01).unwrap();
         assert!((found[2] - 29.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn match_hue_prefers_vivid_cluster_over_nearer_weak_one() {
+        // Both clusters are within tolerance of target_hue=29.0: one sits
+        // closer in angle but is nearly gray (C=0.02), the other is farther
+        // but much more vivid (C=0.2). Picking by nearest angle would return
+        // the weak one and produce a muted color despite a vivid candidate
+        // being available -- match_hue should prefer the vivid one instead.
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.5, 0.02, 32.0]),
+                weight: 0.5,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.5, 0.2, 50.0]),
+                weight: 0.5,
+            },
+        ];
+        let found = match_hue(&clusters, 29.0, 30.0, 0.01).unwrap();
+        assert!((found[2] - 50.0).abs() < 1.0);
+        assert!((found[1] - 0.2).abs() < 1e-3);
     }
 
     #[test]
@@ -757,10 +825,9 @@ mod tests {
         };
         let primitives = build_primitives(&clusters, &stats, &params);
         let n500 = &primitives.neutral[&500];
-        // Taper is against ramp *position* (the pre-bend generic curve),
-        // not the final bent lightness -- see generate_ramp's comment.
-        let expected_c = params.neutral_tint_chroma * chroma_taper(lightness_for_step(500));
-        assert!((n500.oklch[1] - expected_c).abs() < 1e-4);
+        // Neutral ramp skips chroma_taper (see generate_neutral_ramp) --
+        // its chroma is tiny by design, well under real gamut limits.
+        assert!((n500.oklch[1] - params.neutral_tint_chroma).abs() < 1e-4);
     }
 
     #[test]
@@ -789,6 +856,21 @@ mod tests {
         let n500 = &primitives.neutral[&500];
         assert!(circular_diff(n500.oklch[2], 40.0).abs() < 1.0);
         assert!(n500.oklch[1] > params.neutral_tint_chroma);
+    }
+
+    #[test]
+    fn neutral_ramp_extreme_steps_keep_full_chroma_unlike_chromatic_ramps() {
+        // ansi_color0/background resolve to the neutral ramp's most extreme
+        // step (950 for dark wallpapers) -- chroma_taper crushing chroma
+        // there (as it correctly does for chromatic ramps, to avoid gamut
+        // clipping) would defeat neutral_accent_influence at bg/color0
+        // specifically, since that's exactly where it bites hardest. The
+        // neutral ramp should carry its full anchor chroma at step 950,
+        // unreduced by the taper that the chromatic ramps still apply.
+        let neutral = generate_neutral_ramp([0.5, 0.1, 40.0], 0.1, 0.7);
+        let chromatic = generate_ramp([0.5, 0.1, 40.0], 0.1, 0.7);
+        assert!((neutral[&950].oklch[1] - 0.1).abs() < 1e-4);
+        assert!(neutral[&950].oklch[1] > chromatic[&950].oklch[1] + 0.03);
     }
 
     #[test]

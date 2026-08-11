@@ -103,8 +103,8 @@ slot matched (or didn't) before reaching for these knobs blind.
 - **`primitives.json`** — generated color ramps: `red`, `yellow`, `green`,
   `cyan`, `blue`, `magenta`, `neutral`, `accent`, `highlight`. Each ramp
   has steps `50..950` (Tailwind/PrimeNG-style), each step carrying `hex`,
-  `rgb`, and `oklch`. `accent` is the single most *common* cluster (what
-  matugen would extract); `highlight` is the most *vivid* cluster with real
+  `rgb`, and `oklch`. `accent` is the single most _common_ cluster (what
+  matugen would extract); `highlight` is the most _vivid_ cluster with real
   presence — for a mostly-dark wallpaper with a small saturated highlight,
   `accent` is often just a boring dark/gray color, `highlight` is the one
   that actually reads as "this wallpaper's color."
