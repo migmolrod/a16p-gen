@@ -6,7 +6,7 @@ use crate::extract::{CHROMATIC_THRESHOLD, Cluster, ImageStats};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Swatch {
     pub hex: String,
     pub rgb: [u8; 3],

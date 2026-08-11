@@ -1,4 +1,5 @@
 mod color;
+mod component;
 mod config;
 mod extract;
 mod palette_gen;
@@ -20,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the full pipeline and write primitives.json + semantic.json
+    /// Run the full pipeline and write primitives.json + semantic.json + component.json
     Generate {
         image: PathBuf,
         #[arg(long)]
@@ -62,6 +63,7 @@ enum ConfigAction {
 struct Pipeline {
     primitives: palette_gen::Primitives,
     resolved: std::collections::BTreeMap<String, palette_gen::Swatch>,
+    resolved_component: std::collections::BTreeMap<String, palette_gen::Swatch>,
 }
 
 fn run_pipeline(image: &std::path::Path, cfg: &Config) -> Result<Pipeline> {
@@ -78,9 +80,17 @@ fn run_pipeline(image: &std::path::Path, cfg: &Config) -> Result<Pipeline> {
     let mapping = semantic::parse_mapping(&mapping_toml)?;
     let resolved = semantic::resolve(&mapping, &primitives, &stats)?;
 
+    let component_toml = match &cfg.component {
+        Some(custom) => std::fs::read_to_string(custom)?,
+        None => component::DEFAULT_COMPONENT_TOML.to_string(),
+    };
+    let component_mapping = component::parse_mapping(&component_toml)?;
+    let resolved_component = component::resolve(&component_mapping, &resolved)?;
+
     Ok(Pipeline {
         primitives,
         resolved,
+        resolved_component,
     })
 }
 
@@ -101,8 +111,13 @@ fn main() -> Result<()> {
                 out.join("semantic.json"),
                 serde_json::to_string_pretty(&pipeline.resolved)?,
             )?;
+            std::fs::write(
+                out.join("component.json"),
+                serde_json::to_string_pretty(&pipeline.resolved_component)?,
+            )?;
             println!(
-                "wrote {}/primitives.json and {}/semantic.json",
+                "wrote {}/primitives.json, {}/semantic.json, and {}/component.json",
+                out.display(),
                 out.display(),
                 out.display()
             );

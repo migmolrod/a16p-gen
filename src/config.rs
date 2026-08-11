@@ -16,6 +16,7 @@ pub struct Config {
     pub neutral_accent_influence: f32,
     pub hue_lightness_bend: f32,
     pub semantic: Option<String>,
+    pub component: Option<String>,
 }
 
 impl Default for Config {
@@ -32,6 +33,7 @@ impl Default for Config {
             neutral_accent_influence: defaults.neutral_accent_influence,
             hue_lightness_bend: defaults.hue_lightness_bend,
             semantic: None,
+            component: None,
         }
     }
 }
@@ -144,6 +146,10 @@ hue_lightness_bend = {hue_lightness_bend}
 # Optional path to a custom semantic role -> primitive mapping TOML file,
 # overriding the built-in default (src/semantic.rs::DEFAULT_SEMANTIC_TOML).
 # semantic = "/path/to/semantic.toml"
+
+# Optional path to a custom component -> semantic role mapping TOML file,
+# overriding the built-in default (src/component.rs::DEFAULT_COMPONENT_TOML).
+# component = "/path/to/component.toml"
 "#,
             k = d.k,
             max_iters = d.max_iters,

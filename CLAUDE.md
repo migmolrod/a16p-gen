@@ -26,11 +26,14 @@ point-in-time record of the initial planning conversation.
 ## Scope
 
 v1 (current) = palette engine only: image in, color tokens out
-(`primitives.json` / `semantic.json` / terminal swatch). No templating, no
-dotfile installation, no hooks yet — those are deliberately deferred until
-the palette algorithm itself is validated as good against real wallpapers.
-Don't build templating/install machinery unless asked; it's a known, planned
-v2, not forgotten scope.
+(`primitives.json` / `semantic.json` / `component.json` / terminal swatch).
+No templating, no dotfile installation, no hooks yet — those are
+deliberately deferred until the palette algorithm itself is validated as
+good against real wallpapers. Don't build templating/install machinery
+unless asked; it's a known, planned v2, not forgotten scope. The component
+tier (see below) was pulled forward ahead of v2 despite this, since its
+generic-token design turned out not to depend on the template engine
+existing first.
 
 ## Token model (PrimeNG-inspired three tiers)
 
@@ -49,8 +52,26 @@ v2, not forgotten scope.
   algorithm. `auto:bg`/`auto:fg` are special values resolved against the
   detected dark/light mode (`ImageStats::is_dark`) rather than a fixed step,
   so the same mapping works for both light and dark wallpapers.
-- **component** (not built): future per-app tokens (`waybar.module.active`)
-  resolving through semantic → primitive. This is what the (not-yet-built)
+- **component** (`src/component.rs`): generic UI-concept token →
+  semantic-role string mapping, e.g. `"button.background" = "surface_card"`.
+  Deliberately *not* app-namespaced (not `waybar.button.background`) —
+  originally planned that way, but changed before anything consumed it:
+  (1) several themable apps share the same conceptual widgets (buttons,
+  bars, menus, tooltips), so one shared token keeps a theme change
+  cohesive across all of them, where a per-app name couldn't be reused;
+  (2) it decouples this tier from the (not-yet-built) template engine's
+  timeline and from which apps are actually themed — swapping waybar for
+  another bar, or adding a new themable app, never touches this file,
+  since the vocabulary never names an app. Resolves against the
+  *resolved semantic* map (not `Primitives` directly) via
+  `component::resolve`, reusing `auto:bg`/`auto:fg` handling for free
+  instead of reimplementing it a layer up. Status roles
+  (`success`/`warning`/`danger`/`info`) are intentionally not duplicated
+  here since templates can reference those semantic roles directly; this
+  tier only adds value for structural/container concepts (background/
+  foreground/border on window/bar/button/menu/tooltip/selection) with no
+  1:1 semantic equivalent. `Config::component` is an optional path
+  override, same shape as `Config::semantic`. What the (not-yet-built)
   template engine will consume.
 
 ## Pipeline (src/main.rs::run_pipeline)
@@ -317,6 +338,11 @@ path without touching anything. Mise wraps these as `config-init` /
   anchor spread).
 - `src/semantic.rs` — default mapping, resolution logic. Unit tested
   (parses, resolves, `auto:bg`/`auto:fg` pick correctly, unknown ramp errors).
+- `src/component.rs` — generic component-token → semantic-role mapping,
+  resolution logic (a lookup against the resolved semantic map, no
+  `ramp.step`/`auto:*` parsing needed since semantic already did that).
+  Unit tested (parses, resolves, resolved value matches the semantic role
+  it points at, unknown role errors).
 - `src/config.rs` — `Config` (TOML-loadable, has `Default`), XDG-aware
   `load`, `annotated_default_toml` template, maps to `GenParams`.
 - `src/xdg.rs` — XDG Base Directory config path resolution. Unit tested.
@@ -331,7 +357,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (37 unit tests as of the fallback-confidence fix, all
+`mise run test` (40 unit tests as of the component-tier addition, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify
