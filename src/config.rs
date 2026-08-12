@@ -1,7 +1,21 @@
 use crate::palette_gen::GenParams;
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
+
+/// One `[templates.<name>]` entry: a template to render and where to
+/// write it. Field names deliberately match matugen's own manifest
+/// shape (`input_path`/`output_path`/`post_hook`) -- see
+/// `~/source/matugen-themes/` for prior art on what real per-app entries
+/// look like. Paths accept a leading `~` (`src/xdg.rs::expand_tilde`).
+#[derive(Deserialize, Clone)]
+pub struct TemplateEntry {
+    pub input_path: String,
+    pub output_path: String,
+    #[serde(default)]
+    pub post_hook: Option<String>,
+}
 
 #[derive(Deserialize)]
 #[serde(default)]
@@ -17,6 +31,7 @@ pub struct Config {
     pub hue_lightness_bend: f32,
     pub semantic: Option<String>,
     pub component: Option<String>,
+    pub templates: BTreeMap<String, TemplateEntry>,
 }
 
 impl Default for Config {
@@ -34,6 +49,7 @@ impl Default for Config {
             hue_lightness_bend: defaults.hue_lightness_bend,
             semantic: None,
             component: None,
+            templates: BTreeMap::new(),
         }
     }
 }
@@ -150,6 +166,19 @@ hue_lightness_bend = {hue_lightness_bend}
 # Optional path to a custom component -> semantic role mapping TOML file,
 # overriding the built-in default (src/component.rs::DEFAULT_COMPONENT_TOML).
 # component = "/path/to/component.toml"
+
+# Per-application render templates ('a16p render'). Each entry maps a name
+# to a template's input path (minijinja/Jinja2 syntax -- semantic roles
+# are accessed as `semantic.<role>.hex`, component tokens as
+# `component["<token>"].hex` since token names contain dots) and where the
+# rendered result should be written. `post_hook` (optional) is a shell
+# command run after writing that template's output, only when
+# `a16p render --run-hooks` is passed. Paths accept a leading `~` for $HOME.
+#
+# [templates.waybar]
+# input_path = "~/.config/a16p-gen/templates/waybar-colors.css"
+# output_path = "~/.config/waybar/colors.css"
+# post_hook = "pkill -SIGUSR2 waybar"
 "#,
             k = d.k,
             max_iters = d.max_iters,

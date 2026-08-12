@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Swatch {
     pub hex: String,
+    pub hex_stripped: String,
     pub rgb: [u8; 3],
     pub oklch: [f32; 3],
 }
@@ -16,8 +17,11 @@ pub struct Swatch {
 fn swatch_from_oklch(lch: [f32; 3]) -> Swatch {
     let lab = oklch_to_oklab(lch);
     let rgb = oklab_to_srgb_u8(lab);
+    let hex = to_hex(rgb);
+    let hex_stripped = hex.trim_start_matches('#').to_string();
     Swatch {
-        hex: to_hex(rgb),
+        hex,
+        hex_stripped,
         rgb,
         oklch: lch,
     }

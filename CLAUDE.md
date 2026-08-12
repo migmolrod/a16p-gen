@@ -25,13 +25,15 @@ point-in-time record of the initial planning conversation.
 
 ## Scope
 
-v1 (current) = palette engine only: image in, color tokens out
-(`primitives.json` / `semantic.json` / `component.json` / terminal swatch).
-No templating, no dotfile installation, no hooks yet — those are
-deliberately deferred until the palette algorithm itself is validated as
-good against real wallpapers. Don't build templating/install machinery
-unless asked; it's a known, planned v2, not forgotten scope. The component
-tier (see below) was pulled forward ahead of v2 despite this, since its
+v1 (current) = palette engine (`primitives.json` / `semantic.json` /
+`component.json` / terminal swatch) *plus* a first templating slice:
+`a16p render` (`src/render.rs`) renders per-application config templates
+with the generated colors via minijinja. Still no dotfile
+*installation* (nothing manages symlinks/copies into place, discovers
+which apps are installed, or manages a template collection for the
+user) and no hooks beyond a template's own `post_hook` — those remain
+deliberately deferred until asked. The component tier (see below) was
+pulled forward ahead of the rest of v2 despite this, since its
 generic-token design turned out not to depend on the template engine
 existing first.
 
@@ -123,6 +125,52 @@ existing first.
    `Config::semantic` path), look up each `"ramp.step"` / `auto:*` value
    against the primitives, produce concrete `Swatch`es.
 
+## Templates (`a16p render`)
+
+`src/render.rs` renders per-application config templates (minijinja,
+Jinja2 syntax) with the pipeline's colors. `~/source/matugen-themes/`
+(matugen's own template collection) was reviewed as a structural
+reference — manifest shape, what fields real per-app templates need, the
+post-hook idea — not as literal template source: its color names are
+Material-You-specific (`primary`, `on_surface`, `error_container`, ...)
+and don't map onto this project's semantic/component role names, so
+templates need rewriting regardless of syntax. Default minijinja syntax
+(`{% %}`/`{{ }}`) is used rather than matching matugen's custom `<* *>`
+block delimiters, since there's no real porting win once variable names
+already differ.
+
+- **Manifest**: `[templates.<name>]` tables live directly in
+  `config.toml` (`Config::templates: BTreeMap<String, TemplateEntry>`,
+  `src/config.rs`) — no second manifest file. Field names
+  (`input_path`/`output_path`/`post_hook`) deliberately match matugen's
+  own, so per-app entries (and their reload commands) translate directly
+  if referenced from matugen docs. Paths accept a leading `~`
+  (`xdg::expand_tilde`).
+- **Context**: `render::build_context` exposes `primitives`, `semantic`,
+  `component` (the same three tiers as the JSON outputs) plus `image`
+  (the wallpaper path) to every template. Semantic/primitive keys have no
+  dots, so `{{ semantic.background.hex }}` works as plain attribute
+  access; component token names contain dots (`button.background`), so
+  they need bracket access: `{{ component["button.background"].hex }}`.
+  Iterating a whole tier uses minijinja's documented `|dictsort` idiom —
+  `{% for name, value in component|dictsort %}` — the equivalent of
+  matugen's `<* for name, value in colors *>`.
+- **`hex_stripped`**: matugen exposes hex-without-`#` as a plain
+  attribute per color. Rather than a minijinja custom filter, `Swatch`
+  (`src/palette_gen.rs`) just carries a `hex_stripped` field, computed
+  once in `swatch_from_oklch`. Flows into `primitives.json`/
+  `semantic.json`/`component.json` too, which is harmless.
+- **`--dry-run`**: prints each template's rendered content and would-be
+  output path to stdout, writes nothing, runs no hooks — the templating
+  equivalent of `preview`'s file-write-free pipeline run, for fast
+  template-authoring iteration.
+- **`--run-hooks`**: `post_hook` (an arbitrary shell command) only runs
+  when this flag is passed — writing files is the safe default, since
+  hooks are shell commands sourced from a config file. A failing/missing
+  hook prints to stderr but doesn't stop rendering of the remaining
+  templates (files for every template are already written by the time
+  hooks run).
+
 ## Known rough edges (expected iteration, not bugs to silently "fix")
 
 None currently tracked — full narrative log of what's been found and fixed
@@ -211,7 +259,15 @@ path without touching anything. Mise wraps these as `config-init` /
   it points at, unknown role errors).
 - `src/config.rs` — `Config` (TOML-loadable, has `Default`), XDG-aware
   `load`, `annotated_default_toml` template, maps to `GenParams`.
-- `src/xdg.rs` — XDG Base Directory config path resolution. Unit tested.
+  `TemplateEntry`/`Config::templates` hold the `[templates.*]` manifest
+  consumed by `render.rs`.
+- `src/xdg.rs` — XDG Base Directory config path resolution, plus
+  `expand_tilde` for template input/output paths. Unit tested.
+- `src/render.rs` — minijinja context building (`primitives`/`semantic`/
+  `component`/`image`) and per-template rendering, consumed by
+  `Command::Render`. Unit tested (attribute vs bracket access, `|dictsort`
+  loop over a whole tier, `hex_stripped`, undefined-variable errors) —
+  all against an in-memory context, no filesystem needed.
 - `src/preview.rs` — `print_ansi16` (`background`/`accent`/`foreground` row,
   where accent = `resolved["primary"]`, then the raw ANSI16 swatch) and
   `print_terminal_mock` (prompt/`ls`/log-levels/diff/code-line mockup using
@@ -219,11 +275,12 @@ path without touching anything. Mise wraps these as `config-init` /
   hard to judge fg-on-bg contrast and overall feel, the mockup is meant to
   approximate "does this look like a real terminal."
 - `src/main.rs` — clap CLI (`generate`, `preview`, `config init`/`path`,
-  `clusters` for raw k-means diagnostics), wires the pipeline.
+  `clusters` for raw k-means diagnostics, `render` for template
+  rendering), wires the pipeline.
 
 ## Testing
 
-`mise run test` (40 unit tests as of the component-tier addition, all
+`mise run test` (49 unit tests as of the templating slice, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify

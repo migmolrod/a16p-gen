@@ -4,6 +4,7 @@ mod config;
 mod extract;
 mod palette_gen;
 mod preview;
+mod render;
 mod semantic;
 mod xdg;
 
@@ -45,6 +46,18 @@ enum Command {
         image: PathBuf,
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+    /// Render each configured [templates.*] entry with the generated colors
+    Render {
+        image: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Print rendered output to stdout instead of writing files or running hooks
+        #[arg(long)]
+        dry_run: bool,
+        /// Run each template's post_hook shell command after writing it
+        #[arg(long)]
+        run_hooks: bool,
     },
 }
 
@@ -177,6 +190,44 @@ fn main() -> Result<()> {
                     lch[2],
                     color::to_hex(rgb)
                 );
+            }
+        }
+        Command::Render {
+            image,
+            config,
+            dry_run,
+            run_hooks,
+        } => {
+            let cfg = Config::load(config.as_deref())?;
+            if cfg.templates.is_empty() {
+                anyhow::bail!("no [templates.*] entries in config; nothing to render");
+            }
+            let pipeline = run_pipeline(&image, &cfg)?;
+            let rendered = render::render_all(
+                &cfg.templates,
+                &pipeline.primitives,
+                &pipeline.resolved,
+                &pipeline.resolved_component,
+                &image,
+            )?;
+            for tpl in rendered {
+                if dry_run {
+                    println!("--- {} -> {} ---", tpl.name, tpl.output_path.display());
+                    println!("{}", tpl.content);
+                    continue;
+                }
+                if let Some(parent) = tpl.output_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&tpl.output_path, &tpl.content)?;
+                println!("wrote {} ({})", tpl.output_path.display(), tpl.name);
+                if run_hooks && let Some(hook) = &tpl.post_hook {
+                    match std::process::Command::new("sh").arg("-c").arg(hook).status() {
+                        Ok(status) if status.success() => println!("  post_hook ok: {hook}"),
+                        Ok(status) => eprintln!("  post_hook exited {status}: {hook}"),
+                        Err(e) => eprintln!("  post_hook failed to spawn: {hook} ({e})"),
+                    }
+                }
             }
         }
     }
