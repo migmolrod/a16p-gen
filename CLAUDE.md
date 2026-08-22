@@ -25,17 +25,23 @@ point-in-time record of the initial planning conversation.
 
 ## Scope
 
-v1 (current) = palette engine (`primitives.json` / `semantic.json` /
-`component.json` / terminal swatch) *plus* a first templating slice:
-`a16p render` (`src/render.rs`) renders per-application config templates
-with the generated colors via minijinja. Still no dotfile
-*installation* (nothing manages symlinks/copies into place, discovers
-which apps are installed, or manages a template collection for the
-user) and no hooks beyond a template's own `post_hook` — those remain
-deliberately deferred until asked. The component tier (see below) was
-pulled forward ahead of the rest of v2 despite this, since its
-generic-token design turned out not to depend on the template engine
-existing first.
+v1 = palette engine (`primitives.json` / `semantic.json` /
+`component.json` / terminal swatch) *plus* templating: `a16p render`
+(`src/render.rs`) renders per-application config templates with the
+generated colors via minijinja. This slice is done and considered
+mature — no known gaps in it. Still no dotfile *installation* (nothing
+manages symlinks/copies into place, discovers which apps are installed,
+or manages a template collection for the user) and no hooks beyond a
+template's own `post_hook` — those remain deliberately deferred.
+
+What's left in v1: polishing the palette generation algorithm itself
+(hue matching, ramp curves, neutral tinting, gamut mapping — the knobs
+listed under "Known rough edges" and in `Config`/`GenParams`) against
+real wallpapers, no architectural changes expected. After that, v2 is
+planned as a substantially larger feature set (dotfile installation,
+template collection management, etc.) — scope for that phase isn't
+nailed down yet, so don't assume the deferred items above are its final
+shape.
 
 ## Token model (PrimeNG-inspired three tiers)
 

@@ -76,6 +76,31 @@
       "type": ["string", "null"],
       "default": null,
       "description": "Optional path to a custom component -> semantic role mapping TOML file, overriding src/component.rs::DEFAULT_COMPONENT_TOML."
+    },
+    "templates": {
+      "type": "object",
+      "default": {},
+      "description": "Per-application render templates ('a16p render'). Each key is a template name; see src/render.rs.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["input_path", "output_path"],
+        "properties": {
+          "input_path": {
+            "type": "string",
+            "description": "Path to the minijinja/Jinja2 template source. Accepts a leading '~'."
+          },
+          "output_path": {
+            "type": "string",
+            "description": "Path the rendered result is written to. Accepts a leading '~'."
+          },
+          "post_hook": {
+            "type": ["string", "null"],
+            "default": null,
+            "description": "Optional shell command run after writing this template's output, only when 'a16p render --run-hooks' is passed."
+          }
+        }
+      }
     }
   }
 }

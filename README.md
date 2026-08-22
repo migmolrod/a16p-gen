@@ -23,9 +23,14 @@ architecture writeup.
 
 ## Status
 
-v1: palette engine only. Takes an image, outputs color tokens. Does **not**
-yet render templates or install dotfiles — that's deferred until the
-algorithm quality holds up against real wallpapers.
+v1: palette engine (primitive/semantic/component tiers) plus templating
+(`a16p render`) — takes an image, outputs color tokens, and renders
+per-app config templates from them. Still **no** dotfile installation
+(symlink/copy management, installed-app discovery, template collection
+management) beyond a template's own `post_hook`. Remaining v1 work is
+polishing the palette generation algorithm itself against real
+wallpapers; a v2 with a substantially larger feature set is planned
+after that.
 
 ## Usage
 
@@ -33,11 +38,16 @@ algorithm quality holds up against real wallpapers.
 # terminal mockup + raw ANSI16 swatch, no files written -- the fast iteration loop
 mise run preview -- ./wallpaper.jpg
 
-# full run: writes primitives.json + semantic.json, also prints the preview
+# full run: writes primitives.json + semantic.json + component.json, also prints the preview
 mise run generate -- ./wallpaper.jpg -o ./out
 
 # raw k-means clusters (weight/oklch/hex) + hue anchors -- for diagnosing why a slot matched or didn't
 cargo run -- clusters ./wallpaper.jpg
+
+# render every [templates.*] entry from config.toml with the generated colors
+cargo run -- render ./wallpaper.jpg
+cargo run -- render ./wallpaper.jpg --dry-run   # print to stdout, write nothing
+cargo run -- render ./wallpaper.jpg --run-hooks # also run each template's post_hook
 ```
 
 `preview`/`generate` print a small terminal mockup (prompt, `ls`, log
@@ -112,6 +122,30 @@ slot matched (or didn't) before reaching for these knobs blind.
   `background`, `foreground`, `primary` (→ `highlight.500`), `success`,
   `warning`, `danger`, `info`, `surface_*`, `text_*`) as concrete swatches,
   per the default mapping in `src/semantic.rs::DEFAULT_SEMANTIC_TOML`.
+- **`component.json`** — generic UI-concept tokens (e.g.
+  `button.background`, `window.border`) resolved against `semantic.json`,
+  per the default mapping in `src/component.rs`. App-agnostic by design —
+  no `waybar.*`/`rofi.*` namespacing — so one theme change stays cohesive
+  across every themed app.
+
+## Templates
+
+`a16p render` renders per-app config files (minijinja/Jinja2 syntax) from
+`primitives`/`semantic`/`component`/`image` context, driven by
+`[templates.<name>]` entries in `config.toml`:
+
+```toml
+[templates.waybar]
+input_path = "~/.config/a16p-gen/templates/waybar.css.jinja"
+output_path = "~/.config/waybar/style.css"
+post_hook = "killall -SIGUSR2 waybar"
+```
+
+`{{ semantic.background.hex }}` and `{{ primitives.red["500"].hex }}` for
+dotted-free tier keys; component tokens need bracket access
+(`{{ component["button.background"].hex }}`) since their names contain a
+literal dot. `post_hook` only runs with `--run-hooks` passed; `--dry-run`
+prints rendered output/paths without writing files or running hooks.
 
 ## Development
 
