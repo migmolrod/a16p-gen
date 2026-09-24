@@ -57,9 +57,18 @@ shape.
   e.g. `ansi_color1 = "red.500"`, `danger = "red.500"`. This is where the
   ANSI semantic contract becomes explicit, editable data instead of an
   emergent (and in matugen's case, broken) property of the generation
-  algorithm. `auto:bg`/`auto:fg` are special values resolved against the
-  detected dark/light mode (`ImageStats::is_dark`) rather than a fixed step,
-  so the same mapping works for both light and dark wallpapers.
+  algorithm. **Dark/light variants** live here and only here: a role is
+  either one `"ramp.step"` for both modes or a
+  `{ dark = "...", light = "..." }` pair (`SemanticValue`, untagged
+  serde enum; `ModePair` denies unknown keys so a `ligth` typo errors).
+  `auto:bg`/`auto:fg` are shorthand for the neutral-extreme pair. The
+  effective mode is `Config::mode` (`auto`/`dark`/`light`); `auto` uses
+  `ImageStats::is_dark`, which `run_pipeline` overwrites with the effective
+  mode before resolution. Chose data-level pairs over Jinja `if`/`else` in
+  the mapping (considered, 2026-09-24): the mapping is data Rust resolves,
+  and templating it would add a render pass with only string-level errors.
+  Component tier and templates don't change per mode at all — this
+  is the payoff of templates only seeing component tokens.
 - **component** (`src/component.rs`): generic UI-concept token →
   semantic-role string mapping, e.g. `"button.background" = "surface_card"`.
   Deliberately *not* app-namespaced (not `waybar.button.background`) —
@@ -73,14 +82,30 @@ shape.
   since the vocabulary never names an app. Resolves against the
   *resolved semantic* map (not `Primitives` directly) via
   `component::resolve`, reusing `auto:bg`/`auto:fg` handling for free
-  instead of reimplementing it a layer up. Status roles
-  (`success`/`warning`/`danger`/`info`) are intentionally not duplicated
-  here since templates can reference those semantic roles directly; this
-  tier only adds value for structural/container concepts (background/
-  foreground/border on window/bar/button/menu/tooltip/selection) with no
-  1:1 semantic equivalent. `Config::component` is an optional path
-  override, same shape as `Config::semantic`. What the (not-yet-built)
-  template engine will consume.
+  instead of reimplementing it a layer up. `Config::component` is an
+  optional path override, same shape as `Config::semantic`.
+  **This is the only tier templates can see** (2026-09-24):
+  `render::build_context` exposes just `component` + `image`, so
+  referencing `semantic.*`/`primitives.*` from a template is a render
+  error, not a convention. Primitive/semantic are upstream theming
+  decisions (ramp steps, which neutral end is bg in dark vs light mode);
+  app templates stay one indirection away from them. That reversed an
+  earlier choice to *not* duplicate status roles here — once templates
+  can't reach semantic, the component tier has to cover everything apps
+  need, so it now has groups beyond the structural widgets
+  (`window`/`bar`/`button`/`menu`/`tooltip`/`border`/`selection`):
+  `text`, `surface`, `accent`, `link`, `status` (+ `status.contrast` for
+  text on a status fill), `diff`, `editor`, `syntax`, `terminal`
+  (`terminal.color0..15`, the ANSI16 contract), and `hue` (decorative
+  per-hue picks for bar modules/statusline segments with no status
+  meaning). Many are 1:1 aliases of a semantic role today (e.g.
+  `syntax.string` and `status.success` both → green) — the point is they
+  can be retuned independently without touching any template. `syntax.*`
+  deliberately points at `ansi_colorN` slots, not status roles (strings
+  are green for hue, not because they mean success). Templates that
+  previously reached straight into primitive ramps got new semantic
+  roles instead (`primary_muted`, `surface_raised`, `*_subtle`,
+  `warning_emphasis`, `magenta_emphasis`).
 
 ## Pipeline (src/main.rs::run_pipeline)
 
@@ -89,8 +114,14 @@ shape.
 2. `extract::kmeans_oklab` — hand-rolled Lloyd's k-means in Oklab space
    (`k` clusters, default 16), farthest-point seeding (deterministic, no
    `rand` dependency). Returns weighted `Cluster { oklab, weight }`.
-3. `extract::image_stats` — weighted mean L/C across clusters, dark/light
-   mode via `mean_l < 0.55`.
+3. `extract::image_stats` — weighted mean L/C across clusters, detected
+   dark/light via `mean_l < dark_threshold` (`Config::dark_threshold`,
+   default `extract::DEFAULT_DARK_THRESHOLD` = 0.55), then `Config::mode`
+   can force either. Counting near-white vs near-black clusters was
+   considered instead and rejected: a colorful wallpaper can have no
+   near-neutral clusters at all and still needs an answer; on the real
+   test wallpapers both methods agreed anyway. `a16p clusters` prints
+   detected vs effective mode.
 4. `palette_gen::build_primitives`:
    - For each of the 6 chromatic `HueSlot`s: compute the *true* Oklch hue
      angle of the pure sRGB primary/secondary (`HueSlot::anchor_hue`, not
@@ -145,6 +176,13 @@ templates need rewriting regardless of syntax. Default minijinja syntax
 block delimiters, since there's no real porting win once variable names
 already differ.
 
+- **Template collection** lives outside this repo (like matugen vs.
+  matugen-themes): `~/source/artix-ansible/roles/provisioning/dotfiles/
+  files/shell/.config/a16p-gen/` (`config.toml` + `templates/`). A
+  change to the component vocabulary usually means editing templates
+  there too. Refactor check: render every template with `--dry-run`
+  before/after (a scratch config with `input_path`s pointed at that dir)
+  and `cmp` the output.
 - **Manifest**: `[templates.<name>]` tables live directly in
   `config.toml` (`Config::templates: BTreeMap<String, TemplateEntry>`,
   `src/config.rs`) — no second manifest file. Field names
@@ -152,12 +190,11 @@ already differ.
   own, so per-app entries (and their reload commands) translate directly
   if referenced from matugen docs. Paths accept a leading `~`
   (`xdg::expand_tilde`).
-- **Context**: `render::build_context` exposes `primitives`, `semantic`,
-  `component` (the same three tiers as the JSON outputs) plus `image`
-  (the wallpaper path) to every template. Semantic/primitive keys have no
-  dots, so `{{ semantic.background.hex }}` works as plain attribute
-  access; component token names contain dots (`button.background`), so
-  they need bracket access: `{{ component["button.background"].hex }}`.
+- **Context**: `render::build_context` exposes only `component` plus
+  `image` (the wallpaper path) — see the component-tier note above for
+  why `semantic`/`primitives` are deliberately absent. Token names
+  contain dots (`button.background`), so they need bracket access:
+  `{{ component["button.background"].hex }}`.
   Iterating a whole tier uses minijinja's documented `|dictsort` idiom —
   `{% for name, value in component|dictsort %}` — the equivalent of
   matugen's `<* for name, value in colors *>`.
@@ -184,6 +221,15 @@ lives in `HISTORY.md` (split out 2026-08-11 to keep this file lean); this
 list is just pointers. Add new ones here as they turn up (with the full
 story in `HISTORY.md`); don't silently "fix" something noted here without
 calling it out, since it may be a deliberate v1 tradeoff rather than a bug.
+
+- **Open:** light mode's chromatic 500s (`success`/`warning`/`info`/
+  `primary`, ANSI 1–6) are fixed across modes and read ~1.3–1.9:1 as text
+  on a light background (measured on the real test wallpapers with
+  `mode = "light"`); ramps are lopsided toward light at 500, same reason
+  `text_muted_color` got `{ dark = 500, light = 700 }`. Likely fix is
+  light-side pairs around 600–700, but it's a hue-balance judgment call
+  (ANSI slots, syntax, status all move together) — tune with
+  `mode = "light"` + `preview`, not decided yet.
 
 - **Fixed:** `fallback_rotate`'s confidence damping was a flat, unexplained
   constant — see `HISTORY.md`.
@@ -256,8 +302,11 @@ path without touching anything. Mise wraps these as `config-init` /
   assembly. Unit tested (monotonic ramps, chroma cap, hue matching/fallback
   correctness including the vivid-vs-prevalent case and confidence damping,
   anchor spread).
-- `src/semantic.rs` — default mapping, resolution logic. Unit tested
-  (parses, resolves, `auto:bg`/`auto:fg` pick correctly, unknown ramp errors).
+- `src/semantic.rs` — default mapping, `SemanticValue`/`ModePair`
+  (fixed vs per-mode values), resolution logic. Unit tested (parses,
+  resolves, `auto:bg`/`auto:fg` pick correctly, mode pairs pick the
+  right side, fixed values ignore mode, typo'd pair keys rejected,
+  unknown ramp errors).
 - `src/component.rs` — generic component-token → semantic-role mapping,
   resolution logic (a lookup against the resolved semantic map, no
   `ramp.step`/`auto:*` parsing needed since semantic already did that).
@@ -265,15 +314,16 @@ path without touching anything. Mise wraps these as `config-init` /
   it points at, unknown role errors).
 - `src/config.rs` — `Config` (TOML-loadable, has `Default`), XDG-aware
   `load`, `annotated_default_toml` template, maps to `GenParams`.
+  `ThemeMode` (`mode = "auto" | "dark" | "light"`).
   `TemplateEntry`/`Config::templates` hold the `[templates.*]` manifest
   consumed by `render.rs`.
 - `src/xdg.rs` — XDG Base Directory config path resolution, plus
   `expand_tilde` for template input/output paths. Unit tested.
-- `src/render.rs` — minijinja context building (`primitives`/`semantic`/
-  `component`/`image`) and per-template rendering, consumed by
-  `Command::Render`. Unit tested (attribute vs bracket access, `|dictsort`
-  loop over a whole tier, `hex_stripped`, undefined-variable errors) —
-  all against an in-memory context, no filesystem needed.
+- `src/render.rs` — minijinja context building (`component`/`image`
+  only) and per-template rendering, consumed by `Command::Render`. Unit
+  tested (bracket access, `|dictsort` loop over the tier, `hex_stripped`,
+  semantic/primitives not exposed, unknown-token errors) — all against
+  an in-memory context, no filesystem needed.
 - `src/preview.rs` — `print_ansi16` (`background`/`accent`/`foreground` row,
   where accent = `resolved["primary"]`, then the raw ANSI16 swatch) and
   `print_terminal_mock` (prompt/`ls`/log-levels/diff/code-line mockup using
@@ -286,7 +336,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (49 unit tests as of the templating slice, all
+`mise run test` (52 unit tests as of the dark/light mode pairs, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify
@@ -294,9 +344,15 @@ direct hue matching, and a warm-only gradient to verify the fallback path
 doesn't crash or produce garish output. Recreate similarly if needed
 rather than relying on `find`-ing real wallpapers. For real-wallpaper
 regressions, `a16p clusters <image>` plus `a16p preview <image>` against
-`~/media/pictures/wallpapers/*` is the actual test bed — synthetic images
-didn't surface the weight-vs-vividness bug at all, only a real stylized
-wallpaper did.
+`"$(xdg-user-dir PICTURES)"/wallpapers/*` is the actual test bed —
+synthetic images didn't surface the weight-vs-vividness bug at all, only
+a real stylized wallpaper did. Resolve that path with `xdg-user-dir`
+rather than hardcoding it: it differs between the user's machines, and
+so does the set of wallpapers in it (so don't expect specific filenames
+mentioned in `HISTORY.md` to exist). All current ones are dark; to
+exercise light mode, force it with `mode = "light"` in a scratch config.
+For changes that shouldn't alter output, render all templates with
+`--dry-run` before/after and `cmp` (see Templates section).
 
 When testing XDG path resolution by hand, override `XDG_CONFIG_HOME`
 directly — overriding `HOME` alone does nothing if `XDG_CONFIG_HOME` is

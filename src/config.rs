@@ -17,6 +17,36 @@ pub struct TemplateEntry {
     pub post_hook: Option<String>,
 }
 
+/// Dark/light theme selection. `Auto` uses the wallpaper's detected
+/// lightness (`ImageStats::is_dark`, compared against `dark_threshold`);
+/// `Dark`/`Light` force a mode regardless of the image.
+#[derive(Deserialize, Clone, Copy, Default, PartialEq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
+impl ThemeMode {
+    pub fn is_dark(self, detected: bool) -> bool {
+        match self {
+            ThemeMode::Auto => detected,
+            ThemeMode::Dark => true,
+            ThemeMode::Light => false,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemeMode::Auto => "auto",
+            ThemeMode::Dark => "dark",
+            ThemeMode::Light => "light",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -29,6 +59,8 @@ pub struct Config {
     pub neutral_tint_chroma: f32,
     pub neutral_accent_influence: f32,
     pub hue_lightness_bend: f32,
+    pub mode: ThemeMode,
+    pub dark_threshold: f32,
     pub semantic: Option<String>,
     pub component: Option<String>,
     pub templates: BTreeMap<String, TemplateEntry>,
@@ -47,6 +79,8 @@ impl Default for Config {
             neutral_tint_chroma: defaults.neutral_tint_chroma,
             neutral_accent_influence: defaults.neutral_accent_influence,
             hue_lightness_bend: defaults.hue_lightness_bend,
+            mode: ThemeMode::Auto,
+            dark_threshold: crate::extract::DEFAULT_DARK_THRESHOLD,
             semantic: None,
             component: None,
             templates: BTreeMap::new(),
@@ -159,6 +193,18 @@ neutral_accent_influence = {neutral_accent_influence}
 # choice, so it defaults on.
 hue_lightness_bend = {hue_lightness_bend}
 
+# Dark/light theme: "auto" (detect from the wallpaper), "dark" or "light".
+# Selects which side of each {{ dark = ..., light = ... }} semantic role
+# is used, and which neutral extreme auto:bg/auto:fg resolve to.
+# Templates don't change -- they only see component tokens.
+mode = "{mode}"
+
+# In "auto" mode, a wallpaper whose weighted mean lightness (Oklab L,
+# 0..1, printed by 'a16p clusters' as mean_l) is below this counts as
+# dark. Raise it to call more borderline wallpapers dark, lower it to
+# call more of them light.
+dark_threshold = {dark_threshold}
+
 # Optional path to a custom semantic role -> primitive mapping TOML file,
 # overriding the built-in default (src/semantic.rs::DEFAULT_SEMANTIC_TOML).
 # semantic = "/path/to/semantic.toml"
@@ -168,9 +214,9 @@ hue_lightness_bend = {hue_lightness_bend}
 # component = "/path/to/component.toml"
 
 # Per-application render templates ('a16p render'). Each entry maps a name
-# to a template's input path (minijinja/Jinja2 syntax -- semantic roles
-# are accessed as `semantic.<role>.hex`, component tokens as
-# `component["<token>"].hex` since token names contain dots) and where the
+# to a template's input path (minijinja/Jinja2 syntax -- only component
+# tokens are available, as `component["<token>"].hex` since token names
+# contain dots) and where the
 # rendered result should be written. `post_hook` (optional) is a shell
 # command run after writing that template's output, only when
 # `a16p render --run-hooks` is passed. Paths accept a leading `~` for $HOME.
@@ -189,6 +235,8 @@ hue_lightness_bend = {hue_lightness_bend}
             neutral_tint_chroma = d.neutral_tint_chroma,
             neutral_accent_influence = d.neutral_accent_influence,
             hue_lightness_bend = d.hue_lightness_bend,
+            mode = d.mode.as_str(),
+            dark_threshold = d.dark_threshold,
         )
     }
 }

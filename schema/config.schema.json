@@ -67,10 +67,23 @@
       "default": 0.7,
       "description": "Bends each ramp's step 500 toward its hue's peak-chroma lightness. 0 = every hue forced through the same lightness curve, 1 = step 500 lands exactly on the hue's peak."
     },
+    "mode": {
+      "type": "string",
+      "enum": ["auto", "dark", "light"],
+      "default": "auto",
+      "description": "Dark/light theme. 'auto' detects from the wallpaper's weighted mean lightness (see dark_threshold); 'dark'/'light' force one. Picks the matching side of each { dark, light } semantic role."
+    },
+    "dark_threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.55,
+      "description": "In 'auto' mode, a wallpaper whose weighted mean Oklab lightness is below this counts as dark."
+    },
     "semantic": {
       "type": ["string", "null"],
       "default": null,
-      "description": "Optional path to a custom semantic role -> primitive mapping TOML file, overriding src/semantic.rs::DEFAULT_SEMANTIC_TOML."
+      "description": "Optional path to a custom semantic role -> primitive mapping TOML file, overriding src/semantic.rs::DEFAULT_SEMANTIC_TOML. Each role is \"ramp.step\", \"auto:bg\"/\"auto:fg\", or { dark = \"ramp.step\", light = \"ramp.step\" }."
     },
     "component": {
       "type": ["string", "null"],

@@ -84,8 +84,8 @@ mise run config-path          # print the resolved path
 See `Config` in `src/config.rs` for all fields (cluster count `k`,
 `hue_tolerance`, `min_cluster_weight`, `chroma_clamp_factor`,
 `neutral_tint_chroma`, `neutral_accent_influence`, `max_dim`, `max_iters`,
-and an optional `semantic` path to override the default role→primitive
-mapping) — the generated template documents each one inline. Four are
+`mode`, `dark_threshold`, and an optional `semantic` path to override the
+default role→primitive mapping) — the generated template documents each one inline. Four are
 most worth tuning per wallpaper style:
 
 - `hue_tolerance` — how readily a slot direct-matches vs. falls back to
@@ -103,6 +103,13 @@ most worth tuning per wallpaper style:
   `foreground` themselves (chroma is damped near the ramp's extremes to
   avoid ugly saturated near-black clipping) — check `surface_card`/
   `surface_border` in `semantic.json` for the more visible mid-ramp tint.
+
+Dark vs light: `mode = "auto"` (default) calls a wallpaper dark when its
+weighted mean lightness is below `dark_threshold` (0.55); `mode = "dark"`
+or `"light"` forces one. Semantic roles that differ per mode are written
+as pairs in the semantic mapping, e.g.
+`surface_card = { dark = "neutral.900", light = "neutral.100" }`;
+templates don't change.
 
 `a16p clusters <image>` prints the raw k-means clusters (weight, Oklch,
 hex) and the six hue-slot target angles — useful for seeing exactly why a
@@ -123,15 +130,16 @@ slot matched (or didn't) before reaching for these knobs blind.
   `warning`, `danger`, `info`, `surface_*`, `text_*`) as concrete swatches,
   per the default mapping in `src/semantic.rs::DEFAULT_SEMANTIC_TOML`.
 - **`component.json`** — generic UI-concept tokens (e.g.
-  `button.background`, `window.border`) resolved against `semantic.json`,
-  per the default mapping in `src/component.rs`. App-agnostic by design —
-  no `waybar.*`/`rofi.*` namespacing — so one theme change stays cohesive
-  across every themed app.
+  `button.background`, `status.danger`, `terminal.color1`,
+  `syntax.string`) resolved against `semantic.json`, per the default
+  mapping in `src/component.rs`. App-agnostic by design — no
+  `waybar.*`/`rofi.*` namespacing — so one theme change stays cohesive
+  across every themed app. This is the only tier templates can use.
 
 ## Templates
 
 `a16p render` renders per-app config files (minijinja/Jinja2 syntax) from
-`primitives`/`semantic`/`component`/`image` context, driven by
+`component`/`image` context, driven by
 `[templates.<name>]` entries in `config.toml`:
 
 ```toml
@@ -141,10 +149,11 @@ output_path = "~/.config/waybar/style.css"
 post_hook = "killall -SIGUSR2 waybar"
 ```
 
-`{{ semantic.background.hex }}` and `{{ primitives.red["500"].hex }}` for
-dotted-free tier keys; component tokens need bracket access
-(`{{ component["button.background"].hex }}`) since their names contain a
-literal dot. `post_hook` only runs with `--run-hooks` passed; `--dry-run`
+Templates only see component tokens, accessed with brackets since their
+names contain a literal dot: `{{ component["button.background"].hex }}`
+(also `.hex_stripped`, `.rgb[0..2]`). `semantic`/`primitives` are not in
+the template context — they're the upstream theming layer (dark/light
+choice, ramp steps), and referencing them is a render error. `post_hook` only runs with `--run-hooks` passed; `--dry-run`
 prints rendered output/paths without writing files or running hooks.
 
 ## Development

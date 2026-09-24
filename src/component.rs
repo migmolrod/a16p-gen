@@ -7,16 +7,35 @@ use std::collections::BTreeMap;
 /// `waybar.button.background`) so multiple themable apps can share the
 /// same token -- retuning one component here updates every app template
 /// that consumes it, and adding/swapping a themable app never requires
-/// touching this tier. Status roles (`success`/`warning`/`danger`/`info`)
-/// are deliberately not duplicated here since templates can already
-/// reference those semantic roles directly; this tier only adds value for
-/// structural/container concepts without a 1:1 semantic equivalent.
+/// touching this tier. This is the *only* tier templates can see
+/// (`render::build_context` doesn't expose `semantic`/`primitives`), so it
+/// has to cover everything an app needs -- including status colors, the
+/// terminal ANSI16 palette and syntax highlighting, even where a token is
+/// a straight 1:1 alias of a semantic role today. The indirection is the
+/// point: e.g. `syntax.string` and `status.success` are both green now,
+/// but can be retuned independently without touching any template.
 // Keys are quoted so TOML treats each as one flat string key (matching
 // `ComponentMapping`'s `BTreeMap<String, String>`) instead of parsing the
 // dot as a nested-table path, which would produce a map of maps.
 pub const DEFAULT_COMPONENT_TOML: &str = r#"
 "window.background" = "background"
 "window.foreground" = "foreground"
+"window.shadow" = "background"
+
+"text.default" = "text_color"
+"text.muted" = "text_muted_color"
+
+"surface.ground" = "surface_ground"
+"surface.card" = "surface_card"
+"surface.raised" = "surface_raised"
+"surface.hover" = "surface_raised"
+
+"accent.default" = "primary"
+"accent.muted" = "primary_muted"
+"accent.secondary" = "info"
+"accent.contrast" = "background"
+
+"link.default" = "info"
 
 "bar.background" = "surface_ground"
 "bar.foreground" = "text_color"
@@ -43,6 +62,89 @@ pub const DEFAULT_COMPONENT_TOML: &str = r#"
 
 "selection.background" = "primary"
 "selection.foreground" = "background"
+"selection.inactive_background" = "primary_muted"
+
+# `status.contrast` is text/icons drawn on top of a status-colored fill.
+"status.success" = "success"
+"status.warning" = "warning"
+"status.danger" = "danger"
+"status.info" = "info"
+"status.hint" = "ansi_color4"
+"status.contrast" = "background"
+
+"diff.added" = "success"
+"diff.changed" = "warning"
+"diff.removed" = "danger"
+"diff.added_background" = "success_subtle"
+"diff.changed_background" = "warning_subtle"
+"diff.removed_background" = "danger_subtle"
+"diff.text_background" = "warning_emphasis"
+
+"editor.background" = "background"
+"editor.foreground" = "foreground"
+"editor.cursor" = "foreground"
+"editor.cursor_text" = "background"
+"editor.cursor_line" = "surface_raised"
+"editor.line_number" = "text_muted_color"
+"editor.line_number_active" = "primary"
+"editor.guide" = "surface_border"
+"editor.match_background" = "surface_border"
+"editor.search_background" = "primary"
+"editor.search_foreground" = "background"
+"editor.reference_background" = "surface_raised"
+
+# Syntax colors pick from the ANSI hue slots rather than the status roles:
+# strings are green because of hue, not because they mean "success".
+"syntax.comment" = "text_muted_color"
+"syntax.punctuation" = "text_muted_color"
+"syntax.operator" = "text_color"
+"syntax.variable" = "foreground"
+"syntax.variable_builtin" = "ansi_color1"
+"syntax.identifier" = "ansi_color1"
+"syntax.tag" = "ansi_color1"
+"syntax.string" = "ansi_color2"
+"syntax.type" = "ansi_color3"
+"syntax.tag_attribute" = "ansi_color3"
+"syntax.function" = "ansi_color4"
+"syntax.constant" = "ansi_color5"
+"syntax.keyword" = "ansi_color5"
+"syntax.property" = "ansi_color6"
+"syntax.preproc" = "ansi_color6"
+"syntax.special" = "ansi_color6"
+"syntax.escape" = "ansi_color6"
+
+"terminal.background" = "background"
+"terminal.foreground" = "foreground"
+"terminal.cursor" = "foreground"
+"terminal.cursor_text" = "background"
+"terminal.url" = "info"
+"terminal.color0" = "ansi_color0"
+"terminal.color1" = "ansi_color1"
+"terminal.color2" = "ansi_color2"
+"terminal.color3" = "ansi_color3"
+"terminal.color4" = "ansi_color4"
+"terminal.color5" = "ansi_color5"
+"terminal.color6" = "ansi_color6"
+"terminal.color7" = "ansi_color7"
+"terminal.color8" = "ansi_color8"
+"terminal.color9" = "ansi_color9"
+"terminal.color10" = "ansi_color10"
+"terminal.color11" = "ansi_color11"
+"terminal.color12" = "ansi_color12"
+"terminal.color13" = "ansi_color13"
+"terminal.color14" = "ansi_color14"
+"terminal.color15" = "ansi_color15"
+
+# Decorative per-hue picks for UIs that color things by hue without any
+# status meaning (bar modules, statusline segments).
+"hue.red" = "ansi_color1"
+"hue.green" = "ansi_color2"
+"hue.yellow" = "ansi_color3"
+"hue.blue" = "ansi_color4"
+"hue.magenta" = "ansi_color5"
+"hue.cyan" = "ansi_color6"
+"hue.bright_yellow" = "ansi_color11"
+"hue.dark_magenta" = "magenta_emphasis"
 "#;
 
 pub type ComponentMapping = BTreeMap<String, String>;

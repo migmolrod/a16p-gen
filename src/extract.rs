@@ -15,6 +15,13 @@ pub struct Cluster {
 /// everywhere.
 pub const CHROMATIC_THRESHOLD: f32 = 0.02;
 
+/// Default `Config::dark_threshold`: an image whose weighted mean Oklab
+/// lightness falls below this is treated as dark. Mean lightness rather
+/// than counting near-white vs near-black clusters, since a colorful
+/// wallpaper can have no near-neutral clusters at all and still needs an
+/// answer.
+pub const DEFAULT_DARK_THRESHOLD: f32 = 0.55;
+
 pub struct ImageStats {
     pub mean_l: f32,
     /// Weighted mean chroma across *all* clusters, including near-black/gray
@@ -29,6 +36,9 @@ pub struct ImageStats {
     /// exist", not "how vivid is the image on average", so a small accent
     /// region isn't crushed just because most of the image is dark/gray.
     pub chromatic_mean_c: f32,
+    /// Detected from `mean_l` in `image_stats`; `run_pipeline` then
+    /// overrides it when `Config::mode` isn't `auto`, so downstream
+    /// (`semantic::resolve`) only ever sees the effective mode.
     pub is_dark: bool,
 }
 
@@ -150,7 +160,7 @@ pub fn kmeans_oklab(points: &[[f32; 3]], k: usize, max_iters: usize) -> Vec<Clus
         .collect()
 }
 
-pub fn image_stats(clusters: &[Cluster]) -> ImageStats {
+pub fn image_stats(clusters: &[Cluster], dark_threshold: f32) -> ImageStats {
     use crate::color::oklab_to_oklch;
     let mut mean_l = 0.0;
     let mut mean_c = 0.0;
@@ -174,7 +184,7 @@ pub fn image_stats(clusters: &[Cluster]) -> ImageStats {
         mean_l,
         mean_c,
         chromatic_mean_c,
-        is_dark: mean_l < 0.55,
+        is_dark: mean_l < dark_threshold,
     }
 }
 
@@ -223,7 +233,7 @@ mod tests {
                 weight: 0.01,
             },
         ];
-        let stats = image_stats(&clusters);
+        let stats = image_stats(&clusters, DEFAULT_DARK_THRESHOLD);
         assert!(stats.mean_c < 0.01);
         assert!((stats.chromatic_mean_c - 0.1).abs() < 1e-4);
     }
@@ -234,7 +244,7 @@ mod tests {
             oklab: [0.5, 0.0, 0.0],
             weight: 1.0,
         }];
-        let stats = image_stats(&clusters);
+        let stats = image_stats(&clusters, DEFAULT_DARK_THRESHOLD);
         assert_eq!(stats.chromatic_mean_c, stats.mean_c);
     }
 }

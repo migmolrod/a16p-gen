@@ -82,7 +82,8 @@ struct Pipeline {
 fn run_pipeline(image: &std::path::Path, cfg: &Config) -> Result<Pipeline> {
     let points = extract::load_and_sample(image, cfg.max_dim)?;
     let clusters = extract::kmeans_oklab(&points, cfg.k, cfg.max_iters);
-    let stats = extract::image_stats(&clusters);
+    let mut stats = extract::image_stats(&clusters, cfg.dark_threshold);
+    stats.is_dark = cfg.mode.is_dark(stats.is_dark);
     let params = cfg.gen_params();
     let primitives = palette_gen::build_primitives(&clusters, &stats, &params);
 
@@ -166,10 +167,15 @@ fn main() -> Result<()> {
             let cfg = Config::load(config.as_deref())?;
             let points = extract::load_and_sample(&image, cfg.max_dim)?;
             let clusters = extract::kmeans_oklab(&points, cfg.k, cfg.max_iters);
-            let stats = extract::image_stats(&clusters);
+            let stats = extract::image_stats(&clusters, cfg.dark_threshold);
             println!(
-                "mean_l={:.3} mean_c={:.3} is_dark={}",
-                stats.mean_l, stats.mean_c, stats.is_dark
+                "mean_l={:.3} mean_c={:.3} detected_dark={} (threshold={}) mode={} -> is_dark={}",
+                stats.mean_l,
+                stats.mean_c,
+                stats.is_dark,
+                cfg.dark_threshold,
+                cfg.mode.as_str(),
+                cfg.mode.is_dark(stats.is_dark)
             );
             print!("hue anchors:");
             for slot in palette_gen::HueSlot::ALL {
@@ -203,13 +209,8 @@ fn main() -> Result<()> {
                 anyhow::bail!("no [templates.*] entries in config; nothing to render");
             }
             let pipeline = run_pipeline(&image, &cfg)?;
-            let rendered = render::render_all(
-                &cfg.templates,
-                &pipeline.primitives,
-                &pipeline.resolved,
-                &pipeline.resolved_component,
-                &image,
-            )?;
+            let rendered =
+                render::render_all(&cfg.templates, &pipeline.resolved_component, &image)?;
             for tpl in rendered {
                 if dry_run {
                     println!("--- {} -> {} ---", tpl.name, tpl.output_path.display());
@@ -222,7 +223,11 @@ fn main() -> Result<()> {
                 std::fs::write(&tpl.output_path, &tpl.content)?;
                 println!("wrote {} ({})", tpl.output_path.display(), tpl.name);
                 if run_hooks && let Some(hook) = &tpl.post_hook {
-                    match std::process::Command::new("sh").arg("-c").arg(hook).status() {
+                    match std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(hook)
+                        .status()
+                    {
                         Ok(status) if status.success() => println!("  post_hook ok: {hook}"),
                         Ok(status) => eprintln!("  post_hook exited {status}: {hook}"),
                         Err(e) => eprintln!("  post_hook failed to spawn: {hook} ({e})"),

@@ -1,5 +1,5 @@
 use crate::config::TemplateEntry;
-use crate::palette_gen::{Primitives, Swatch};
+use crate::palette_gen::Swatch;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,15 +18,13 @@ fn make_environment() -> minijinja::Environment<'static> {
     minijinja::Environment::new()
 }
 
-pub fn build_context(
-    primitives: &Primitives,
-    semantic: &BTreeMap<String, Swatch>,
-    component: &BTreeMap<String, Swatch>,
-    image: &Path,
-) -> minijinja::Value {
+/// Templates only ever see the component tier. Primitives and semantic
+/// roles are upstream theming decisions (ramp steps, dark/light picks);
+/// keeping them out of the context means an app template can't bypass the
+/// component tier -- referencing `semantic.*`/`primitives.*` fails to
+/// render instead of silently coupling an app to a lower tier.
+pub fn build_context(component: &BTreeMap<String, Swatch>, image: &Path) -> minijinja::Value {
     minijinja::context! {
-        primitives => primitives,
-        semantic => semantic,
         component => component,
         image => image.display().to_string(),
     }
@@ -42,13 +40,11 @@ pub fn render_one(
 
 pub fn render_all(
     templates: &BTreeMap<String, TemplateEntry>,
-    primitives: &Primitives,
-    semantic: &BTreeMap<String, Swatch>,
     component: &BTreeMap<String, Swatch>,
     image: &Path,
 ) -> Result<Vec<RenderedTemplate>> {
     let env = make_environment();
-    let ctx = build_context(primitives, semantic, component, image);
+    let ctx = build_context(component, image);
 
     templates
         .iter()
@@ -78,7 +74,7 @@ mod tests {
     use crate::extract::{Cluster, ImageStats};
     use crate::palette_gen::GenParams;
 
-    fn sample_tiers() -> (Primitives, BTreeMap<String, Swatch>, BTreeMap<String, Swatch>) {
+    fn sample_component() -> BTreeMap<String, Swatch> {
         let clusters = vec![
             Cluster {
                 oklab: crate::color::oklch_to_oklab([0.2, 0.05, 250.0]),
@@ -102,24 +98,14 @@ mod tests {
         let semantic = crate::semantic::resolve(&semantic_mapping, &primitives, &stats).unwrap();
         let component_mapping =
             crate::component::parse_mapping(crate::component::DEFAULT_COMPONENT_TOML).unwrap();
-        let component = crate::component::resolve(&component_mapping, &semantic).unwrap();
-        (primitives, semantic, component)
-    }
-
-    #[test]
-    fn renders_semantic_role_by_attribute_access() {
-        let (primitives, semantic, component) = sample_tiers();
-        let env = make_environment();
-        let ctx = build_context(&primitives, &semantic, &component, Path::new("/tmp/x.jpg"));
-        let out = render_one(&env, "bg = {{ semantic.background.hex }}", &ctx).unwrap();
-        assert_eq!(out, format!("bg = {}", semantic["background"].hex));
+        crate::component::resolve(&component_mapping, &semantic).unwrap()
     }
 
     #[test]
     fn renders_component_token_by_bracket_access() {
-        let (primitives, semantic, component) = sample_tiers();
+        let component = sample_component();
         let env = make_environment();
-        let ctx = build_context(&primitives, &semantic, &component, Path::new("/tmp/x.jpg"));
+        let ctx = build_context(&component, Path::new("/tmp/x.jpg"));
         let out = render_one(
             &env,
             r#"btn = {{ component["button.background"].hex }}"#,
@@ -131,19 +117,24 @@ mod tests {
 
     #[test]
     fn renders_hex_stripped_field() {
-        let (primitives, semantic, component) = sample_tiers();
+        let component = sample_component();
         let env = make_environment();
-        let ctx = build_context(&primitives, &semantic, &component, Path::new("/tmp/x.jpg"));
-        let out = render_one(&env, "{{ semantic.background.hex_stripped }}", &ctx).unwrap();
-        assert_eq!(out, semantic["background"].hex_stripped);
+        let ctx = build_context(&component, Path::new("/tmp/x.jpg"));
+        let out = render_one(
+            &env,
+            r#"{{ component["window.background"].hex_stripped }}"#,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out, component["window.background"].hex_stripped);
         assert!(!out.starts_with('#'));
     }
 
     #[test]
     fn dictsort_loop_visits_every_component_token() {
-        let (primitives, semantic, component) = sample_tiers();
+        let component = sample_component();
         let env = make_environment();
-        let ctx = build_context(&primitives, &semantic, &component, Path::new("/tmp/x.jpg"));
+        let ctx = build_context(&component, Path::new("/tmp/x.jpg"));
         let out = render_one(
             &env,
             "{% for name, value in component|dictsort %}{{ name }};{% endfor %}",
@@ -156,10 +147,19 @@ mod tests {
     }
 
     #[test]
-    fn unknown_template_variable_errors() {
-        let (primitives, semantic, component) = sample_tiers();
+    fn lower_tiers_are_not_exposed_to_templates() {
+        let component = sample_component();
         let env = make_environment();
-        let ctx = build_context(&primitives, &semantic, &component, Path::new("/tmp/x.jpg"));
-        assert!(render_one(&env, "{{ semantic.nope.hex }}", &ctx).is_err());
+        let ctx = build_context(&component, Path::new("/tmp/x.jpg"));
+        assert!(render_one(&env, "{{ semantic.background.hex }}", &ctx).is_err());
+        assert!(render_one(&env, r#"{{ primitives.red["500"].hex }}"#, &ctx).is_err());
+    }
+
+    #[test]
+    fn unknown_component_token_errors() {
+        let component = sample_component();
+        let env = make_environment();
+        let ctx = build_context(&component, Path::new("/tmp/x.jpg"));
+        assert!(render_one(&env, r#"{{ component["nope"].hex }}"#, &ctx).is_err());
     }
 }
