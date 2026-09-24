@@ -218,3 +218,103 @@ doesn't reopen the clipping problem the taper was originally added for —
 confirmed by testing `neutral_accent_influence` 0.1→0.4 on a real
 wallpaper: `background` visibly shifted hue/saturation instead of staying
 pinned near-black.
+
+### ANSI ramps read pastel next to a neon primary (absolute chroma across hues)
+
+On `videogame-hollowknight-1.jpg` (dark muted teal, one vivid acid green,
+no red/blue/magenta), `primary` (`highlight.500`) was #4ed879 while
+`red.500` was #a4736b — neon vs. pastel. Measured as chroma over the max
+in-gamut chroma at that step's L and hue (`color::relative_chroma`):
+
+| ramp | 500 | C / Cmax(L,h) |
+|---|---|---|
+| highlight | #4ed879 | 0.83 |
+| cyan / green / yellow | — | 0.61 / 0.50 / 0.46 |
+| red / blue / magenta | #a4736b / #485b80 / #a388a1 | 0.26 / 0.24 / 0.16 |
+
+Three stacked causes: (1) hue-slot ramps were capped at an *absolute*
+`chromatic_mean_c * chroma_clamp_factor`, dragged down by the large muted
+teal, while `highlight` bypassed that cap; (2) `fallback_rotate` capped
+again at `chromatic_mean_c*1.5` and damped by `fallback_confidence` (×0.67
+for red here); (3) one absolute C is a very different share of the gamut
+per hue — 0.064 is pastel for red/magenta but fairly strong for cyan,
+which is why magenta looked the most washed out.
+
+Fixed by moving every chromatic ramp to a relative-chroma model. The
+primary's (vivid accent's) relative chroma `r_p` (`primary_vibrancy`,
+floored at `MIN_RELATIVE_CHROMA` = 0.25 so ANSI hues stay tellable apart
+on near-gray wallpapers) is the target. Unmatched slots take `r_p` at their
+exact anchor hue; matched slots keep their cluster's hue and blend its own
+relative chroma toward `r_p` by the new `vibrancy_coherence` knob (default
+0.7 — lift a muted matched blue most of the way, keep a hint of the
+wallpaper's softness). `generate_ramp` then gives every step that fraction
+of `max_chroma` at the step's own L, times `chroma_taper` normalized to 1 at
+step 500. `highlight` uses the same model with the accent's unfloored
+vibrancy, so `primary` and ANSI 500s share one scale.
+
+This **supersedes the `fallback_confidence` fix** (first entry above):
+`fallback_rotate`/`fallback_confidence`/`FALLBACK_MIN_CONFIDENCE` are gone.
+Once the ramp's lightness curve overrode the borrowed L anyway, chroma
+damping was the rotation's whole visible effect — exactly the pastel
+problem. A fallback's lower confidence now only shows as "exact anchor hue,
+no wallpaper hue shift". `chroma_clamp_factor` still exists but now only
+caps the neutral accent tint and the matugen-parity `accent` ramp.
+
+After, same wallpaper: all hue 500s at 0.80 (green 0.84, matched), primary
+#56d77c at 0.80, red #df4032. Tradeoff seen on the other test wallpapers:
+a single very vivid accent (castle's amber at 0.96, witcher's orange at
+0.93) now drives the whole ANSI set near the gamut edge — close to pure
+RGB primaries. Consistent with the goal ("same feel as the primary") but
+louder than wanted once looked at in a real terminal: on Witcher (orange
+primary, `hue_tolerance = 35`), `magenta` — absent from the wallpaper
+entirely — came out `#e52be4`/`#ee5fec` (400), the loudest color in the palette.
+
+Follow-up: `fallback_vibrancy` (default 0.75) scales the primary's
+vibrancy for unmatched slots only (still floored at `MIN_RELATIVE_CHROMA`).
+A flat scale was chosen over a ceiling on `primary_vibrancy`: a ceiling
+would flatten every loud wallpaper to the same fallback vibrancy and stop
+tracking the primary, the whole point of the change. Witcher magenta
+0.93 → 0.69 (`#d357d0`); Hollow Knight fallbacks 0.80 → 0.60 (red
+`#ca584a`) — still far from the original 0.26. Matched slots that read too
+loud (Witcher's sky-matched blue/cyan at 0.84) are `vibrancy_coherence`'s
+job: 0.4 brings them to ~0.75.
+
+The same session surfaced a separate problem with widening `hue_tolerance`
+— see the next entry.
+
+### Wide `hue_tolerance` let a slot take a neighboring hue outright
+
+A matched slot used the cluster's hue as-is. The ANSI anchors are unevenly
+spaced (red→yellow 80.6°, yellow→green **32.7°**, green→cyan 52.3°,
+cyan→blue 69.3°, blue→magenta 64.3°, magenta→red 60.8°), so any tolerance
+near half the smallest gap breaks the red≠orange / yellow≠green contract.
+Tolerance was being widened for a good reason: Witcher's sky (225–232°)
+sits almost exactly between the cyan and blue anchors, so no tolerance
+could both reach it and stay safe. At 35: Hollow Knight's `yellow`
+matched acid green (~34° off) and came out green; Witcher's `red` became
+the orange primary and `cyan`/`blue` both took the same sky cluster.
+
+Fixed in two parts. `hue_shift_limit` (default 0.3) caps how far a matched
+slot's hue moves toward its cluster, as a fraction of the gap to the
+neighbor on that side (`clamp_hue_shift`) — a fixed degree cap can't work
+when 15° is small for red→yellow but half of yellow→green. Below 0.5 two
+slots can never cross (tested). And `match_hue` now ranks own-family
+clusters (nearer this slot's anchor than any other) above neighbor-family
+ones before comparing chroma, so a vivid green can't displace a real, softer
+yellow.
+
+The first version measured red's gap to yellow directly. On
+`pixel-art-castle` that let red shift 22.5° to h52 — `red.500` came out
+**identical to `primary`** (`#e47317`), so `danger` was the accent color.
+The red→yellow gap holds a whole named color of its own, so pure sRGB
+orange (`#ff8000`) is now an extra boundary in `neighbor_gaps` (not a
+slot): red and yellow each measure to it. Red then moves at most ~8°
+(h36, `#e84913`), yellow ~16°. Lowering the limit globally was the
+alternative, but red was still red-orange at 0.15 and that also took away
+blue's lean toward the sky. No boundary for the other wide gaps on purpose
+— Oklch packs azure/violet near blue, and a sky-tinted blue is character
+worth keeping.
+
+Result at `hue_tolerance` 20/30/35 on all three test wallpapers: ANSI
+500 hues stay in wheel order with a ≥28° minimum gap. Witcher cyan/blue
+split the sky (216°/243°). Hollow Knight yellow `#bed664` (h120).

@@ -38,30 +38,55 @@ fn in_gamut(lab: [f32; 3]) -> bool {
         && srgb.blue <= 1.0 + eps
 }
 
-/// If `lch` is outside the sRGB gamut, reduce its chroma (holding L and hue
-/// fixed) via binary search until it isn't. This is the standard "hold L/H,
-/// back off C" gamut mapping approach -- clipping r/g/b independently
-/// instead (the previous behavior) shifts both hue and perceived lightness
-/// in a way that reads as visibly wrong on saturated wallpapers, since each
-/// channel gets clamped by a different amount. Binary search is bounded at
-/// the *original* chroma as `hi`, and correctness here leans on `in_gamut`
-/// using the *unclamped* conversion -- see that function's doc comment for
-/// why the obvious `into_color()` version is a tautology.
-pub fn gamut_map_oklch(lch: [f32; 3]) -> [f32; 3] {
-    if in_gamut(oklch_to_oklab(lch)) {
-        return lch;
-    }
+/// Upper bound for `max_chroma`'s search. No sRGB color exceeds Oklch
+/// chroma ~0.33 (pure magenta/blue), so 0.5 is comfortably out of gamut
+/// at every L and hue.
+const MAX_SEARCH_CHROMA: f32 = 0.5;
+
+/// Highest chroma that still lands inside the sRGB gamut at lightness `l`
+/// and hue `h`, via binary search. Correctness leans on `in_gamut` using
+/// the *unclamped* conversion -- see that function's doc comment for why
+/// the obvious `into_color()` version is a tautology.
+pub fn max_chroma(l: f32, h: f32) -> f32 {
     let mut lo = 0.0f32;
-    let mut hi = lch[1];
+    let mut hi = MAX_SEARCH_CHROMA;
     for _ in 0..20 {
         let mid = (lo + hi) / 2.0;
-        if in_gamut(oklch_to_oklab([lch[0], mid, lch[2]])) {
+        if in_gamut(oklch_to_oklab([l, mid, h])) {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    [lch[0], lo, lch[2]]
+    lo
+}
+
+/// How vivid `lch` is *for its hue and lightness*: its chroma as a fraction
+/// of `max_chroma` there, in [0, 1]. Absolute chroma isn't comparable
+/// across hues -- C=0.064 is pastel for red (max ~0.25 at mid L) but fairly
+/// strong for cyan (max ~0.14) -- so this is the measure used to give every
+/// ramp the same perceived vibrancy as the primary. 0 where the gamut
+/// collapses to a point (L at 0 or 1).
+pub fn relative_chroma(lch: [f32; 3]) -> f32 {
+    let max = max_chroma(lch[0], lch[2]);
+    if max < 1e-4 {
+        0.0
+    } else {
+        (lch[1] / max).clamp(0.0, 1.0)
+    }
+}
+
+/// If `lch` is outside the sRGB gamut, reduce its chroma (holding L and hue
+/// fixed) to `max_chroma`. This is the standard "hold L/H, back off C"
+/// gamut mapping approach -- clipping r/g/b independently instead (the
+/// previous behavior) shifts both hue and perceived lightness in a way that
+/// reads as visibly wrong on saturated wallpapers, since each channel gets
+/// clamped by a different amount.
+pub fn gamut_map_oklch(lch: [f32; 3]) -> [f32; 3] {
+    if in_gamut(oklch_to_oklab(lch)) {
+        return lch;
+    }
+    [lch[0], lch[1].min(max_chroma(lch[0], lch[2])), lch[2]]
 }
 
 /// Oklab -> sRGB (0..255). Gamut-maps by reducing chroma at fixed L/hue
@@ -161,6 +186,26 @@ mod tests {
         let rgb = oklab_to_srgb_u8(oklch_to_oklab(lch));
         let back_hue = oklab_to_oklch(srgb_u8_to_oklab(rgb))[2];
         assert!(circular_diff(lch[2], back_hue).abs() < 2.0);
+    }
+
+    #[test]
+    fn max_chroma_sits_exactly_on_the_gamut_boundary() {
+        // Pure red is itself on the boundary, so max chroma at its own L/h
+        // is its own chroma (~0.258); a hair more must fall out of gamut.
+        let red = pure_corner_oklch([255, 0, 0]);
+        let max = max_chroma(red[0], red[2]);
+        assert!((max - red[1]).abs() < 0.005);
+        assert!(in_gamut(oklch_to_oklab([red[0], max, red[2]])));
+        assert!(!in_gamut(oklch_to_oklab([red[0], max + 0.01, red[2]])));
+    }
+
+    #[test]
+    fn relative_chroma_is_one_on_the_boundary_and_zero_for_gray() {
+        let red = pure_corner_oklch([255, 0, 0]);
+        assert!(relative_chroma(red) > 0.98);
+        assert!(relative_chroma([0.5, 0.0, 30.0]) < 1e-4);
+        let half = [red[0], red[1] / 2.0, red[2]];
+        assert!((relative_chroma(half) - 0.5).abs() < 0.02);
     }
 
     #[test]

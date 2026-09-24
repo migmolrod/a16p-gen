@@ -83,15 +83,26 @@ mise run config-path          # print the resolved path
 
 See `Config` in `src/config.rs` for all fields (cluster count `k`,
 `hue_tolerance`, `min_cluster_weight`, `chroma_clamp_factor`,
+`vibrancy_coherence`, `fallback_vibrancy`, `hue_shift_limit`,
 `neutral_tint_chroma`, `neutral_accent_influence`, `max_dim`, `max_iters`,
 `mode`, `dark_threshold`, and an optional `semantic` path to override the
 default role→primitive mapping) — the generated template documents each one inline. Four are
 most worth tuning per wallpaper style:
 
-- `hue_tolerance` — how readily a slot direct-matches vs. falls back to
-  hue-rotation.
-- `chroma_clamp_factor` — how vivid/muted the result reads relative to the
-  source image's own chromatic content.
+- `hue_tolerance` — how readily a slot direct-matches a wallpaper hue vs.
+  falls back to its pure anchor hue. How far a matched slot's hue then
+  moves is capped by `hue_shift_limit` (0..1, default 0.3, as a fraction
+  of the gap to the neighboring ANSI hue), so a wide tolerance can't turn
+  yellow green or red orange.
+- `vibrancy_coherence` (0..1, default 0.7) — the ANSI hue ramps are as
+  vivid as the primary color, measured relative to each hue's own gamut
+  (a neon green primary gives an equally neon-for-a-red red). This sets how
+  far a hue that *does* appear in the wallpaper gets pulled toward that
+  vibrancy: 1 = all equal, 0 = keep the wallpaper's own saturation.
+  Hues *absent* from the wallpaper instead get `fallback_vibrancy` (0..1,
+  default 0.75) × the primary's vibrancy — lower it if those read too loud.
+  (`chroma_clamp_factor` now only caps the neutral tint and the
+  matugen-parity `accent` ramp.)
 - `min_cluster_weight` — how small a color region can be and still count as
   a real accent (vs. noise). Matters a lot for stylized/pixel-art wallpapers
   with small deliberate highlights against a large muted/dark background;

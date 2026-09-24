@@ -32,7 +32,7 @@
       "minimum": 0,
       "maximum": 180,
       "default": 30.0,
-      "description": "Max degrees a cluster's hue may differ from a target ANSI hue and still count as a direct match. Lower = only very close hues match, more images fall back to hue rotation. Higher = looser matches, risks calling orange \"red\"."
+      "description": "Max degrees a cluster's hue may differ from a target ANSI hue and still count as a direct match. Lower = only very close hues match, more slots fall back to their pure hue. Higher = more slots pick up a wallpaper color; how far their hue moves is capped by hue_shift_limit."
     },
     "min_cluster_weight": {
       "type": "number",
@@ -45,7 +45,7 @@
       "type": "number",
       "minimum": 0,
       "default": 1.4,
-      "description": "Ramp chroma is capped at (chromatic_mean_c * this factor). Lower = safer/more muted colors closer to the wallpaper's actual saturation. Higher = more vivid, more likely to look \"off\" from the image."
+      "description": "Absolute chroma cap (chromatic_mean_c * this factor) for the neutral ramp's accent tint and the matugen-parity accent ramp. Does not affect the red..magenta or highlight ramps, whose vividness follows the primary's relative to each hue's gamut (see vibrancy_coherence)."
     },
     "neutral_tint_chroma": {
       "type": "number",
@@ -66,6 +66,27 @@
       "maximum": 1,
       "default": 0.7,
       "description": "Bends each ramp's step 500 toward its hue's peak-chroma lightness. 0 = every hue forced through the same lightness curve, 1 = step 500 lands exactly on the hue's peak."
+    },
+    "vibrancy_coherence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.7,
+      "description": "For hue slots that match a wallpaper color, blends that color's own vibrancy (chroma relative to its hue's gamut) toward the primary's. 1 = every slot as vivid as the primary, 0 = matched colors keep the wallpaper's own saturation. Unmatched slots always use the primary's vibrancy."
+    },
+    "fallback_vibrancy": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.75,
+      "description": "Vibrancy of hue slots with no matching wallpaper color, as a fraction of the primary's. 1 = as vivid as the primary, lower = absent hues step back. Floored so ANSI hues stay distinguishable."
+    },
+    "hue_shift_limit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.3,
+      "description": "How far a matched slot's hue may move toward the wallpaper color, as a fraction of the gap to the neighboring ANSI hue. 0 = pure anchor hue, 0.5 = halfway to the neighbor, 1 = could reach it. Keeps yellow from turning green when hue_tolerance is wide."
     },
     "mode": {
       "type": "string",

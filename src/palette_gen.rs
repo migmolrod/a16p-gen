@@ -1,6 +1,6 @@
 use crate::color::{
-    circular_diff, lerp_hue, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab, pure_corner_oklch,
-    to_hex,
+    circular_diff, lerp_hue, max_chroma, oklab_to_oklch, oklab_to_srgb_u8, oklch_to_oklab,
+    pure_corner_oklch, relative_chroma, to_hex,
 };
 use crate::extract::{CHROMATIC_THRESHOLD, Cluster, ImageStats};
 use serde::Serialize;
@@ -127,6 +127,74 @@ pub fn peak_lightness_for_hue(hue: f32) -> f32 {
     anchors[0].1
 }
 
+/// Hue of pure sRGB orange (#ff8000). Not an ANSI slot, but a boundary for
+/// `neighbor_gaps`: the red->yellow gap (~81 deg, by far the widest) holds
+/// a whole named color of its own, so a fraction of the full gap let red
+/// shift squarely into orange -- on an amber wallpaper `red.500` came out
+/// identical to `primary`, and `danger` with it. Measuring red's and
+/// yellow's gaps to orange instead keeps red red. The other wide gaps
+/// (cyan->blue, blue->magenta) get no such boundary on purpose: Oklch packs
+/// azure/violet close to blue, and a blue leaning toward a sky between cyan
+/// and blue is exactly the wallpaper character worth keeping.
+fn orange_boundary_hue() -> f32 {
+    pure_corner_oklch([255, 128, 0])[2]
+}
+
+/// Hue gaps from the slot anchor nearest `hue` to its two neighbors on the
+/// wheel: `(toward lower hue, toward higher hue)`, in degrees. Neighbors
+/// are the other `HueSlot` anchors plus `orange_boundary_hue`, all computed
+/// (not hardcoded), same as `peak_lightness_for_hue`. The gaps are very
+/// uneven -- yellow->green is ~33 deg, cyan->blue ~69 -- which is why
+/// `clamp_hue_shift` limits shifts as a fraction of the gap rather than a
+/// fixed number of degrees.
+pub fn neighbor_gaps(hue: f32) -> (f32, f32) {
+    let mut marks: Vec<(f32, bool)> = HueSlot::ALL
+        .iter()
+        .map(|s| (s.anchor_hue(), true))
+        .chain(std::iter::once((orange_boundary_hue(), false)))
+        .collect();
+    marks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let n = marks.len();
+    let i = (0..n)
+        .filter(|&i| marks[i].1)
+        .min_by(|&a, &b| {
+            circular_diff(hue, marks[a].0)
+                .abs()
+                .partial_cmp(&circular_diff(hue, marks[b].0).abs())
+                .unwrap()
+        })
+        .expect("slot anchors are non-empty");
+    let below = circular_diff(marks[(i + n - 1) % n].0, marks[i].0).abs();
+    let above = circular_diff(marks[i].0, marks[(i + 1) % n].0).abs();
+    (below, above)
+}
+
+/// True if `hue` is at least as close to `target_hue` as to any `HueSlot`
+/// anchor -- i.e. the color belongs to that slot's own hue family rather
+/// than a neighbor's (an acid green 34 deg from yellow is still nearer
+/// green's anchor, so it's green's, not yellow's).
+fn in_family(target_hue: f32, hue: f32) -> bool {
+    let own = circular_diff(target_hue, hue).abs();
+    HueSlot::ALL
+        .iter()
+        .all(|s| own <= circular_diff(s.anchor_hue(), hue).abs() + 1e-3)
+}
+
+/// Move `anchor_hue` toward `matched_hue`, but by at most `limit` times the
+/// gap to the neighbor on that side (see `neighbor_gaps`). Keeps
+/// a matched slot inside its own hue family even when `hue_tolerance` is
+/// wide enough to reach a neighbor's colors: `limit` 0 = exact anchor hue,
+/// 1 = could reach the neighbor. Taking the cluster's hue outright
+/// (the previous behavior) turned yellow green on a mostly-green wallpaper
+/// at `hue_tolerance = 35`, and made cyan/blue identical when both matched
+/// one sky cluster sitting between them -- see `HISTORY.md`.
+pub fn clamp_hue_shift(anchor_hue: f32, matched_hue: f32, limit: f32) -> f32 {
+    let (below, above) = neighbor_gaps(anchor_hue);
+    let limit = limit.clamp(0.0, 1.0);
+    let offset = circular_diff(anchor_hue, matched_hue).clamp(-below * limit, above * limit);
+    (anchor_hue + offset).rem_euclid(360.0)
+}
+
 /// Most *vivid* (highest-chroma) weighted cluster within `tolerance` degrees
 /// of `target_hue`, carrying at least `min_weight` share of the image. Skips
 /// near-neutral clusters since a gray pixel's hue angle is noise, not signal.
@@ -134,19 +202,26 @@ pub fn peak_lightness_for_hue(hue: f32) -> f32 {
 /// Picks by chroma, not nearest angle: nearest-angle-wins let a weak, barely-
 /// qualifying cluster (technically in tolerance but low chroma) outrank a
 /// more vivid cluster just a few degrees farther off, producing a *more*
-/// muted color than `fallback_rotate` would've given for a non-match at all
-/// -- `fallback_rotate` already picks by vividness and confidence-damps by
-/// distance, so a "weak real match" could end up worse than "no match."
-/// Widening `hue_tolerance` to fix muted colors made this worse in practice,
-/// not better: it let more weak clusters qualify as full-confidence "real"
-/// matches, displacing the vividness-aware fallback path entirely.
+/// muted color than the (then vividness-picking) fallback would've given
+/// for a non-match at all, so a "weak real match" could end up worse than
+/// "no match." Widening `hue_tolerance` to fix muted colors made this worse
+/// in practice, not better: it let more weak clusters qualify as "real"
+/// matches, displacing the vividness-aware fallback path entirely. (Muted
+/// matches are also lifted toward the primary's vibrancy now, see
+/// `resolve_hue_slot`'s `vibrancy_coherence`.)
+///
+/// Own-family clusters (`in_family`) outrank neighbor-family ones regardless
+/// of chroma; vividness only decides within each group. Otherwise a wide
+/// tolerance lets a vivid neighbor color (acid green) beat a real but softer
+/// in-family one (an actual yellow) for the yellow slot, and
+/// `clamp_hue_shift` could only hide that mistake, not undo it.
 pub fn match_hue(
     clusters: &[Cluster],
     target_hue: f32,
     tolerance: f32,
     min_weight: f32,
 ) -> Option<[f32; 3]> {
-    let mut best: Option<[f32; 3]> = None;
+    let mut best: Option<(bool, [f32; 3])> = None;
     for c in clusters {
         if c.weight < min_weight {
             continue;
@@ -156,11 +231,19 @@ pub fn match_hue(
             continue;
         }
         let d = circular_diff(target_hue, lch[2]).abs();
-        if d <= tolerance && best.map(|b| lch[1] > b[1]).unwrap_or(true) {
-            best = Some(lch);
+        if d > tolerance {
+            continue;
+        }
+        let family = in_family(target_hue, lch[2]);
+        let better = match best {
+            None => true,
+            Some((best_family, b)) => (family, lch[1]) > (best_family, b[1]),
+        };
+        if better {
+            best = Some((family, lch));
         }
     }
-    best
+    best.map(|(_, lch)| lch)
 }
 
 /// The most *vivid* cluster clearing `min_weight` -- the same "real signal,
@@ -173,7 +256,7 @@ pub fn match_hue(
 /// "accent" color. Weighting by `weight * chroma` instead of a hard floor
 /// was tried and rejected: a 5x weight gap still beats a 3x chroma gap
 /// under that product, so it doesn't reliably favor vividness either.
-/// Shared by `fallback_rotate` and `pick_vivid_accent`.
+/// Backs `pick_vivid_accent`, and through it `primary_vibrancy`.
 fn most_vivid(clusters: &[Cluster], min_weight: f32) -> Option<Cluster> {
     clusters
         .iter()
@@ -186,77 +269,84 @@ fn most_vivid(clusters: &[Cluster], min_weight: f32) -> Option<Cluster> {
         })
 }
 
-/// Floor confidence multiplier for `fallback_rotate`'s chroma damping --
-/// the worst case, a rotation with no real basis at all (`most_vivid` found
-/// no qualifying cluster) or one dragged from the opposite side of the hue
-/// wheel. Never damps to zero: even the least-confident fallback should
-/// still register as *some* color, not vanish into gray.
-const FALLBACK_MIN_CONFIDENCE: f32 = 0.5;
+/// Floor for the vibrancy every chromatic ANSI ramp is generated at (see
+/// `primary_vibrancy`). On a near-grayscale wallpaper the vivid accent's
+/// relative chroma is close to 0, and copying that onto the hue slots would
+/// collapse red/green/yellow/... into indistinguishable grays -- breaking
+/// the one contract this tool exists for (red still reads as red). Same
+/// spirit as a confidence floor: never let a hue slot vanish into gray.
+pub const MIN_RELATIVE_CHROMA: f32 = 0.25;
 
-/// How much to trust a fallback rotation, based on how far the borrowed
-/// cluster's actual hue sits from `target_hue`. A cluster just barely
-/// outside `tolerance` (i.e. `match_hue` almost accepted it) is close to a
-/// real match, so it keeps full confidence; a cluster from clear across the
-/// hue wheel (180 degrees off) is close to a coin flip, so it's damped to
-/// `FALLBACK_MIN_CONFIDENCE`. Replaces a flat, unexplained `* 0.8` constant
-/// that damped every fallback the same amount regardless of how much of a
-/// stretch the rotation actually was.
-fn fallback_confidence(distance: f32, tolerance: f32) -> f32 {
-    let worst = (180.0 - tolerance).max(1.0);
-    let t = ((distance - tolerance) / worst).clamp(0.0, 1.0);
-    1.0 - t * (1.0 - FALLBACK_MIN_CONFIDENCE)
+/// Target vibrancy for the chromatic ramps: the vivid accent's (`primary`'s)
+/// relative chroma (`color::relative_chroma` -- chroma as a fraction of what
+/// its hue can reach at its lightness), floored at `MIN_RELATIVE_CHROMA`.
+/// Relative, not absolute: an absolute chroma cap shared across hues made
+/// red/blue/magenta read pastel next to a neon primary, since the same C
+/// is a much smaller share of those hues' gamut -- see `HISTORY.md`.
+pub fn primary_vibrancy(vivid_accent: [f32; 3]) -> f32 {
+    relative_chroma(vivid_accent).max(MIN_RELATIVE_CHROMA)
 }
 
-/// When the image has no real presence near `target_hue`, borrow the most
-/// vivid qualifying cluster (see `most_vivid`) and rotate it onto the
-/// target hue, keeping its lightness (clamped to a workable range) and
-/// damping its chroma by `fallback_confidence` to signal lower confidence
-/// than a genuine match.
-pub fn fallback_rotate(
-    clusters: &[Cluster],
-    target_hue: f32,
-    stats: &ImageStats,
-    tolerance: f32,
-    min_weight: f32,
-) -> [f32; 3] {
-    let vivid = most_vivid(clusters, min_weight);
-
-    let (l, c, confidence) = match vivid {
-        Some(cluster) => {
-            let lch = oklab_to_oklch(cluster.oklab);
-            let distance = circular_diff(target_hue, lch[2]).abs();
-            (
-                lch[0].clamp(0.35, 0.75),
-                lch[1].max(0.03),
-                fallback_confidence(distance, tolerance),
-            )
-        }
-        // No qualifying cluster at all -- this isn't rotating a real color,
-        // it's guessing from whole-image stats, so it gets the floor
-        // confidence outright rather than a computed distance.
-        None => (
-            stats.mean_l.clamp(0.35, 0.75),
-            stats.mean_c.max(0.05),
-            FALLBACK_MIN_CONFIDENCE,
-        ),
-    };
-    [
-        l,
-        (c.min(stats.chromatic_mean_c.max(0.05) * 1.5)) * confidence,
-        target_hue,
-    ]
+/// Where a chromatic hue slot's ramp comes from: which hue it's generated
+/// at, and how vivid it is as a fraction of that hue's gamut at each step
+/// (see `generate_ramp`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotAnchor {
+    pub hue: f32,
+    pub relative_chroma: f32,
+    /// True if a real wallpaper cluster was matched (`match_hue`), false if
+    /// the slot fell back to its pure anchor hue.
+    pub matched: bool,
 }
 
+/// Resolve a hue slot against the wallpaper:
+///
+/// - **Matched** (`match_hue` found a cluster): the anchor hue shifted toward
+///   the cluster's, at most `hue_shift_limit` of the way to the neighboring
+///   anchor (`clamp_hue_shift`), and a
+///   vibrancy blended from the cluster's own relative chroma toward
+///   `primary_r` by `vibrancy_coherence` -- 1 = every slot as vivid as the
+///   primary, 0 = the cluster's own saturation kept as-is (a muted blue in
+///   an otherwise vivid wallpaper stays muted).
+/// - **Fallback** (no cluster near this hue): the slot's exact anchor hue at
+///   `primary_r * fallback_vibrancy`, floored at `MIN_RELATIVE_CHROMA`. This
+///   replaced rotating the most vivid cluster onto the target hue and
+///   damping its chroma by rotation distance (`fallback_confidence`): that
+///   damping was tied to how far the borrowed cluster sat on the hue wheel
+///   and made a fallback red read pastel next to a neon primary. A flat,
+///   user-tunable scale keeps fallbacks proportional to the primary -- a
+///   hue the wallpaper doesn't have at all shouldn't be the loudest color
+///   in the palette (a pure-magenta slot at full vibrancy next to an orange
+///   primary was, see `HISTORY.md`), but shouldn't collapse to pastel either.
 pub fn resolve_hue_slot(
     slot: HueSlot,
     clusters: &[Cluster],
-    stats: &ImageStats,
-    tolerance: f32,
-    min_weight: f32,
-) -> [f32; 3] {
+    primary_r: f32,
+    params: &GenParams,
+) -> SlotAnchor {
     let target = slot.anchor_hue();
-    match_hue(clusters, target, tolerance, min_weight)
-        .unwrap_or_else(|| fallback_rotate(clusters, target, stats, tolerance, min_weight))
+    match match_hue(
+        clusters,
+        target,
+        params.hue_tolerance,
+        params.min_cluster_weight,
+    ) {
+        Some(lch) => {
+            let own = relative_chroma(lch);
+            let t = params.vibrancy_coherence.clamp(0.0, 1.0);
+            SlotAnchor {
+                hue: clamp_hue_shift(target, lch[2], params.hue_shift_limit),
+                relative_chroma: own + (primary_r - own) * t,
+                matched: true,
+            }
+        }
+        None => SlotAnchor {
+            hue: target,
+            relative_chroma: (primary_r * params.fallback_vibrancy.clamp(0.0, 1.0))
+                .max(MIN_RELATIVE_CHROMA),
+            matched: false,
+        },
+    }
 }
 
 /// Weighted circular mean hue across clusters, weighted by weight*chroma so
@@ -352,11 +442,47 @@ fn chroma_taper(l: f32) -> f32 {
     (1.0 - d * 0.85).clamp(0.15, 1.0)
 }
 
-pub fn generate_ramp(anchor_lch: [f32; 3], chroma_cap: f32, hue_lightness_bend: f32) -> Ramp {
-    generate_ramp_inner(anchor_lch, chroma_cap, hue_lightness_bend, true)
+/// Chromatic ramp at `hue`, where every step's chroma is the same fraction
+/// (`relative_chroma`, 0..1) of what that hue can actually reach at the
+/// step's lightness (`color::max_chroma`), shaped by `chroma_taper` toward
+/// the ramp's extremes -- normalized so step 500 carries `relative_chroma`
+/// exactly (the taper would otherwise shave ~5% off there, making the
+/// primary's own 500 read slightly less vivid than the cluster it came from). An absolute chroma shared across the ramp (the
+/// previous behavior) is a different share of the gamut at every step and
+/// every hue -- a C that's neon at one hue is pastel at another -- which is
+/// what made ANSI slots read washed-out next to the primary. Also makes the
+/// taper a purely aesthetic shaping now, not a gamut-clipping guard: the
+/// relative target is in gamut by construction.
+pub fn generate_ramp(hue: f32, relative_chroma: f32, hue_lightness_bend: f32) -> Ramp {
+    let r = relative_chroma.clamp(0.0, 1.0);
+    let taper_mid = chroma_taper(lightness_for_step(MID_STEP as u16));
+    RAMP_STEPS
+        .iter()
+        .map(|&step| {
+            let l = lightness_for_step_bent(step, hue, hue_lightness_bend);
+            // Taper against the step's *position* in the ramp -- see
+            // `generate_absolute_ramp_inner`.
+            let taper = chroma_taper(lightness_for_step(step)) / taper_mid;
+            let c = (r * taper).min(1.0) * max_chroma(l, hue);
+            (step, swatch_from_oklch([l, c, hue]))
+        })
+        .collect()
 }
 
-/// Like `generate_ramp` but skips `chroma_taper`. `chroma_taper` exists to
+/// Absolute-chroma ramp: `anchor_lch`'s chroma (capped at `chroma_cap`)
+/// held across every step, tapered toward the extremes. Only `accent` uses
+/// this now -- it's the literal matugen-parity ramp, so it keeps the
+/// original generation exactly rather than the relative model the
+/// chromatic ramps moved to.
+pub fn generate_absolute_ramp(
+    anchor_lch: [f32; 3],
+    chroma_cap: f32,
+    hue_lightness_bend: f32,
+) -> Ramp {
+    generate_absolute_ramp_inner(anchor_lch, chroma_cap, hue_lightness_bend, true)
+}
+
+/// Like `generate_absolute_ramp` but skips `chroma_taper`. `chroma_taper` exists to
 /// keep vivid *chromatic* ramps (red/yellow/green/...) from relying on
 /// out-of-gamut chroma near the ramp's extremes -- but the neutral ramp's
 /// chroma is tiny by design (`neutral_tint_chroma` default 0.015, an order
@@ -376,10 +502,10 @@ pub fn generate_neutral_ramp(
     chroma_cap: f32,
     hue_lightness_bend: f32,
 ) -> Ramp {
-    generate_ramp_inner(anchor_lch, chroma_cap, hue_lightness_bend, false)
+    generate_absolute_ramp_inner(anchor_lch, chroma_cap, hue_lightness_bend, false)
 }
 
-fn generate_ramp_inner(
+fn generate_absolute_ramp_inner(
     anchor_lch: [f32; 3],
     chroma_cap: f32,
     hue_lightness_bend: f32,
@@ -452,6 +578,9 @@ pub struct GenParams {
     pub neutral_tint_chroma: f32,
     pub neutral_accent_influence: f32,
     pub hue_lightness_bend: f32,
+    pub vibrancy_coherence: f32,
+    pub fallback_vibrancy: f32,
+    pub hue_shift_limit: f32,
 }
 
 impl Default for GenParams {
@@ -480,6 +609,23 @@ impl Default for GenParams {
             // hues span visibly different lightness ranges, which looks
             // inconsistent for a themed ANSI16 set.
             hue_lightness_bend: 0.7,
+            // Mostly, not fully, toward the primary: a slot that genuinely
+            // matched a muted cluster (vivid greens/reds but soft blues)
+            // gets lifted so it doesn't read pastel next to its neon
+            // siblings, but keeps a hint of the wallpaper's own softness.
+            // Fallback slots always use the primary's vibrancy outright.
+            vibrancy_coherence: 0.7,
+            // Hues absent from the wallpaper at 3/4 of the primary's
+            // vibrancy: full vibrancy made them the loudest colors in the
+            // palette (pure magenta next to an orange primary), while the
+            // matched slots they sit beside get pulled toward the primary
+            // only partway (vibrancy_coherence) from usually-lower values.
+            fallback_vibrancy: 0.75,
+            // Under 0.5 so two neighboring slots can never cross each other,
+            // with room to spare: at 0.3 yellow (the tightest gap, ~33 deg to
+            // green) moves at most ~10 deg, while blue can still lean ~21
+            // deg toward a sky that sits between cyan and blue.
+            hue_shift_limit: 0.3,
         }
     }
 }
@@ -489,25 +635,30 @@ pub fn build_primitives(
     stats: &ImageStats,
     params: &GenParams,
 ) -> Primitives {
+    // Every chromatic ramp is generated at a vibrancy relative to its own
+    // hue's gamut, anchored to the primary's (see `primary_vibrancy`).
+    let vivid_accent = pick_vivid_accent(clusters, params.min_cluster_weight);
+    let primary_r = primary_vibrancy(vivid_accent);
+
+    let mut ramps: BTreeMap<&'static str, Ramp> = BTreeMap::new();
+    for slot in HueSlot::ALL {
+        let anchor = resolve_hue_slot(slot, clusters, primary_r, params);
+        ramps.insert(
+            slot.name(),
+            generate_ramp(
+                anchor.hue,
+                anchor.relative_chroma,
+                params.hue_lightness_bend,
+            ),
+        );
+    }
+
+    // Absolute cap for the neutral tint and the matugen-parity `accent`
+    // ramp only -- the chromatic ramps above are relative now.
     // chromatic_mean_c (not mean_c): a mostly-dark/desaturated image
     // shouldn't have its accent vividness crushed by pixels that are
     // achromatic in the first place -- see ImageStats::chromatic_mean_c.
     let chroma_cap = stats.chromatic_mean_c.max(0.02) * params.chroma_clamp_factor;
-
-    let mut ramps: BTreeMap<&'static str, Ramp> = BTreeMap::new();
-    for slot in HueSlot::ALL {
-        let anchor = resolve_hue_slot(
-            slot,
-            clusters,
-            stats,
-            params.hue_tolerance,
-            params.min_cluster_weight,
-        );
-        ramps.insert(
-            slot.name(),
-            generate_ramp(anchor, chroma_cap, params.hue_lightness_bend),
-        );
-    }
 
     // bg/fg tint: blend from the flat average-hue/fixed-chroma baseline
     // (influence=0, original behavior) toward the wallpaper's vivid accent
@@ -515,7 +666,6 @@ pub fn build_primitives(
     // and not "prevalent" is the right notion of accent here.
     let base_hue = weighted_mean_hue(clusters);
     let influence = params.neutral_accent_influence.clamp(0.0, 1.0);
-    let vivid_accent = pick_vivid_accent(clusters, params.min_cluster_weight);
     let neutral_hue = lerp_hue(base_hue, vivid_accent[2], influence);
     let vivid_chroma = vivid_accent[1].min(chroma_cap);
     let neutral_chroma = params.neutral_tint_chroma
@@ -527,14 +677,19 @@ pub fn build_primitives(
     );
 
     let accent_anchor = pick_accent(clusters);
-    let accent = generate_ramp(
+    let accent = generate_absolute_ramp(
         accent_anchor,
         chroma_cap.max(accent_anchor[1]),
         params.hue_lightness_bend,
     );
+    // Same relative model as the hue slots so `primary` and the ANSI 500s
+    // share one vibrancy scale -- but the accent's *own* relative chroma,
+    // not `primary_r`'s floored one: on a genuinely gray wallpaper the
+    // primary should honestly read gray, the floor is only there to keep
+    // the ANSI hues telling apart.
     let highlight = generate_ramp(
-        vivid_accent,
-        chroma_cap.max(vivid_accent[1]),
+        vivid_accent[2],
+        relative_chroma(vivid_accent),
         params.hue_lightness_bend,
     );
 
@@ -557,17 +712,33 @@ mod tests {
 
     #[test]
     fn ramp_is_monotonically_lighter_toward_low_steps() {
-        let ramp = generate_ramp([0.5, 0.15, 30.0], 0.2, 0.7);
+        let ramp = generate_ramp(30.0, 0.8, 0.7);
         let l50 = ramp[&50].oklch[0];
         let l950 = ramp[&950].oklch[0];
         assert!(l50 > l950);
     }
 
     #[test]
-    fn ramp_chroma_never_exceeds_cap() {
-        let ramp = generate_ramp([0.5, 0.5, 30.0], 0.2, 0.7);
-        for swatch in ramp.values() {
-            assert!(swatch.oklch[1] <= 0.2 + 1e-4);
+    fn ramp_holds_the_same_gamut_fraction_across_hues() {
+        // The whole point of the relative model: a given vibrancy is the
+        // same share of the gamut at every hue, so red.500 is exactly as
+        // "neon for a red" as cyan.500 is for a cyan -- not the same
+        // absolute C, which would be pastel for one and loud for the other.
+        for slot in HueSlot::ALL {
+            let ramp = generate_ramp(slot.anchor_hue(), 0.8, 0.7);
+            let r = relative_chroma(ramp[&500].oklch);
+            assert!((r - 0.8).abs() < 0.01, "{} r={r}", slot.name());
+        }
+    }
+
+    #[test]
+    fn ramp_stays_in_gamut_at_full_vibrancy() {
+        // r=1 targets max_chroma exactly at every step, so gamut mapping in
+        // swatch_from_oklch should be a no-op (chroma not reduced).
+        let ramp = generate_ramp(HueSlot::Magenta.anchor_hue(), 1.0, 0.7);
+        for (&step, swatch) in &ramp {
+            let max = max_chroma(swatch.oklch[0], swatch.oklch[2]);
+            assert!(swatch.oklch[1] <= max + 1e-4, "step={step}");
         }
     }
 
@@ -577,7 +748,7 @@ mod tests {
         // just at the endpoints, for every bend strength -- otherwise a
         // "lighter" step could render darker than a step above it.
         for bend in [0.0, 0.3, 0.7, 1.0] {
-            let ramp = generate_ramp([0.5, 0.15, 95.0], 0.2, bend);
+            let ramp = generate_ramp(95.0, 0.8, bend);
             let mut prev_l = f32::INFINITY;
             for &step in RAMP_STEPS.iter() {
                 let l = ramp[&step].oklch[0];
@@ -594,8 +765,8 @@ mod tests {
         // step 500 toward that peak, which is the actual fix for the
         // "mid-ramp yellow reads as olive/brown" rough edge.
         let yellow_hue = HueSlot::Yellow.anchor_hue();
-        let flat = generate_ramp([0.5, 0.1, yellow_hue], 0.2, 0.0);
-        let bent = generate_ramp([0.5, 0.1, yellow_hue], 0.2, 0.7);
+        let flat = generate_ramp(yellow_hue, 0.5, 0.0);
+        let bent = generate_ramp(yellow_hue, 0.5, 0.7);
         assert!(bent[&500].oklch[0] > flat[&500].oklch[0] + 0.1);
         // The true curve floor (step 950, t=1) stays put regardless of bend.
         assert!((bent[&950].oklch[0] - flat[&950].oklch[0]).abs() < 1e-4);
@@ -640,6 +811,163 @@ mod tests {
     }
 
     #[test]
+    fn match_hue_prefers_own_family_over_more_vivid_neighbor() {
+        // A soft real yellow vs. a vivid acid green that's still within a
+        // wide tolerance of the yellow anchor -- the yellow slot should
+        // take its own family's color, however much more vivid the green.
+        let yellow = HueSlot::Yellow.anchor_hue();
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.8, 0.08, yellow + 3.0]),
+                weight: 0.2,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.8, 0.19, 144.0]),
+                weight: 0.2,
+            },
+        ];
+        let found = match_hue(&clusters, yellow, 35.0, 0.01).unwrap();
+        assert!((found[2] - (yellow + 3.0)).abs() < 0.5);
+        // With no in-family candidate, the neighbor's color still matches.
+        let found = match_hue(&clusters[1..], yellow, 35.0, 0.01).unwrap();
+        assert!((found[2] - 144.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn neighbor_gaps_match_adjacent_anchors() {
+        let (below, above) = neighbor_gaps(HueSlot::Yellow.anchor_hue());
+        let red = HueSlot::Red.anchor_hue();
+        let yellow = HueSlot::Yellow.anchor_hue();
+        let green = HueSlot::Green.anchor_hue();
+        let orange = orange_boundary_hue();
+        assert!(red < orange && orange < yellow);
+        // Red and yellow measure to the orange boundary, not each other.
+        assert!((below - (yellow - orange)).abs() < 1e-3);
+        assert!((above - (green - yellow)).abs() < 1e-3);
+        let (_, red_above) = neighbor_gaps(red);
+        assert!((red_above - (orange - red)).abs() < 1e-3);
+        // Red's lower neighbor is magenta, across the 0/360 wrap.
+        let (below, _) = neighbor_gaps(red);
+        let magenta = HueSlot::Magenta.anchor_hue();
+        assert!((below - (red + 360.0 - magenta)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn clamp_hue_shift_limits_by_the_gap_on_the_shifted_side() {
+        let yellow = HueSlot::Yellow.anchor_hue();
+        let (below, above) = neighbor_gaps(yellow);
+        // Toward green (tight gap): clamped to 0.3 * ~33 deg.
+        let h = clamp_hue_shift(yellow, yellow + 34.0, 0.3);
+        assert!((h - (yellow + 0.3 * above)).abs() < 1e-3);
+        // Toward orange (wider gap): a 10 deg shift is under 0.3 * ~55, kept.
+        let h = clamp_hue_shift(yellow, yellow - 10.0, 0.3);
+        assert!((h - (yellow - 10.0)).abs() < 1e-3);
+        let h = clamp_hue_shift(yellow, yellow - 60.0, 0.3);
+        assert!((h - (yellow - 0.3 * below)).abs() < 1e-3);
+        // limit 0 pins the anchor hue exactly.
+        assert!((clamp_hue_shift(yellow, yellow + 20.0, 0.0) - yellow).abs() < 1e-3);
+    }
+
+    #[test]
+    fn matched_slots_never_cross_neighbors_below_half_limit() {
+        // Worst case: every slot matched a cluster sitting right on its
+        // neighbor's anchor, in both directions. Below limit 0.5 the six
+        // hues must keep their order around the wheel.
+        for limit in [0.3, 0.49] {
+            for toward_higher in [false, true] {
+                let mut hues: Vec<(f32, f32)> = HueSlot::ALL
+                    .iter()
+                    .map(|s| {
+                        let a = s.anchor_hue();
+                        let (below, above) = neighbor_gaps(a);
+                        let target = if toward_higher { a + above } else { a - below };
+                        (a, clamp_hue_shift(a, target.rem_euclid(360.0), limit))
+                    })
+                    .collect();
+                hues.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+                for i in 0..hues.len() {
+                    let (_, h0) = hues[i];
+                    let (_, h1) = hues[(i + 1) % hues.len()];
+                    assert!(
+                        circular_diff(h0, h1) > 0.0,
+                        "limit={limit} toward_higher={toward_higher} {h0} vs {h1}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn red_stays_red_when_the_primary_is_orange() {
+        // The pixel-art-castle regression: an amber/orange primary matched
+        // by the red slot at hue_tolerance = 30 came out identical to the
+        // primary. Red must stay within the limit of its gap to orange.
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.25, 0.03, 80.0]),
+                weight: 0.8,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.65, 0.17, 52.0]),
+                weight: 0.2,
+            },
+        ];
+        let stats = ImageStats {
+            mean_l: 0.3,
+            mean_c: 0.05,
+            chromatic_mean_c: 0.06,
+            is_dark: true,
+        };
+        let params = GenParams {
+            hue_tolerance: 30.0,
+            ..GenParams::default()
+        };
+        let p = build_primitives(&clusters, &stats, &params);
+        let red = HueSlot::Red.anchor_hue();
+        let (_, above) = neighbor_gaps(red);
+        let shift = circular_diff(red, p.red[&500].oklch[2]);
+        assert!(
+            shift <= params.hue_shift_limit * above + 0.5,
+            "shift={shift}"
+        );
+        assert_ne!(p.red[&500].hex, p.highlight[&500].hex);
+    }
+
+    #[test]
+    fn wide_tolerance_keeps_yellow_yellow_on_a_green_wallpaper() {
+        // The Hollow Knight regression at hue_tolerance = 35: acid greens
+        // ~34 deg from the yellow anchor used to be taken outright.
+        let clusters = vec![
+            Cluster {
+                oklab: oklch_to_oklab([0.22, 0.035, 215.0]),
+                weight: 0.7,
+            },
+            Cluster {
+                oklab: oklch_to_oklab([0.81, 0.186, 144.0]),
+                weight: 0.3,
+            },
+        ];
+        let stats = ImageStats {
+            mean_l: 0.34,
+            mean_c: 0.065,
+            chromatic_mean_c: 0.065,
+            is_dark: true,
+        };
+        let params = GenParams {
+            hue_tolerance: 35.0,
+            ..GenParams::default()
+        };
+        let p = build_primitives(&clusters, &stats, &params);
+        let yellow = HueSlot::Yellow.anchor_hue();
+        let (_, above) = neighbor_gaps(yellow);
+        let shift = circular_diff(yellow, p.yellow[&500].oklch[2]);
+        assert!(
+            shift <= params.hue_shift_limit * above + 0.5,
+            "shift={shift}"
+        );
+    }
+
+    #[test]
     fn match_hue_respects_tolerance() {
         let clusters = vec![Cluster {
             oklab: oklch_to_oklab([0.5, 0.2, 100.0]),
@@ -649,50 +977,106 @@ mod tests {
     }
 
     #[test]
-    fn fallback_rotate_lands_exactly_on_target_hue() {
+    fn unmatched_slot_lands_on_anchor_hue_at_primary_vibrancy() {
+        // Nothing near red: the slot takes red's exact anchor hue and the
+        // primary's vibrancy scaled by fallback_vibrancy -- a flat scale,
+        // not a damping by how far the nearest cluster sits on the wheel.
         let clusters = vec![Cluster {
-            oklab: oklch_to_oklab([0.6, 0.15, 100.0]),
+            oklab: oklch_to_oklab([0.6, 0.15, 150.0]),
             weight: 0.9,
         }];
-        let stats = ImageStats {
-            mean_l: 0.5,
-            mean_c: 0.1,
-            chromatic_mean_c: 0.1,
-            is_dark: false,
+        let params = GenParams {
+            fallback_vibrancy: 0.5,
+            ..GenParams::default()
         };
-        let lch = fallback_rotate(&clusters, 29.0, &stats, 30.0, 0.02);
-        assert!((lch[2] - 29.0).abs() < 1e-3);
+        let slot = resolve_hue_slot(HueSlot::Red, &clusters, 0.8, &params);
+        assert!(!slot.matched);
+        assert!((slot.hue - HueSlot::Red.anchor_hue()).abs() < 1e-3);
+        assert!((slot.relative_chroma - 0.4).abs() < 1e-6);
+        // Scaling never pushes a fallback below the distinguishability floor.
+        let params = GenParams {
+            fallback_vibrancy: 0.1,
+            ..GenParams::default()
+        };
+        let slot = resolve_hue_slot(HueSlot::Red, &clusters, 0.8, &params);
+        assert!((slot.relative_chroma - MIN_RELATIVE_CHROMA).abs() < 1e-6);
     }
 
     #[test]
-    fn fallback_rotate_prefers_vivid_small_cluster_over_dull_prevalent_one() {
-        // A large muted "fog" cluster and a small vivid "accent" cluster,
-        // both above the min_weight noise floor -- the accent should win on
-        // chroma even though it covers far fewer pixels.
+    fn matched_slot_blends_own_vibrancy_toward_primary_by_coherence() {
+        // A real but muted red cluster: coherence 0 keeps its own
+        // vibrancy, 1 lifts it all the way to the primary's, 0.5 halfway.
+        let muted = [0.55, 0.05, 30.0];
+        let clusters = vec![Cluster {
+            oklab: oklch_to_oklab(muted),
+            weight: 0.5,
+        }];
+        let own = relative_chroma(muted);
+        let primary_r = 0.9;
+        let at = |coherence| {
+            resolve_hue_slot(
+                HueSlot::Red,
+                &clusters,
+                primary_r,
+                &GenParams {
+                    vibrancy_coherence: coherence,
+                    ..GenParams::default()
+                },
+            )
+        };
+        let keep = at(0.0);
+        assert!(keep.matched);
+        assert!((keep.hue - 30.0).abs() < 1e-2);
+        assert!((keep.relative_chroma - own).abs() < 1e-4);
+        assert!((at(1.0).relative_chroma - primary_r).abs() < 1e-4);
+        let half = at(0.5).relative_chroma;
+        assert!((half - (own + primary_r) / 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn primary_vibrancy_is_floored_for_near_gray_wallpapers() {
+        // A barely-chromatic accent would otherwise make every ANSI hue
+        // near-gray and indistinguishable from each other.
+        assert!((primary_vibrancy([0.5, 0.005, 40.0]) - MIN_RELATIVE_CHROMA).abs() < 1e-6);
+        let vivid = pure_corner_oklch([0, 255, 0]);
+        assert!(primary_vibrancy(vivid) > 0.95);
+    }
+
+    #[test]
+    fn ansi_ramps_match_primary_vibrancy_on_a_single_hue_wallpaper() {
+        // The Hollow Knight case: dark muted teal everywhere plus one neon
+        // green -- no red/blue/magenta at all. Those fallback slots used to
+        // come out pastel (capped by the muted mean chroma and damped by
+        // rotation distance); they should now sit at a fixed fraction
+        // (fallback_vibrancy) of the highlight ramp's vibrancy.
         let clusters = vec![
             Cluster {
-                oklab: oklch_to_oklab([0.3, 0.03, 100.0]),
-                weight: 0.3,
+                oklab: oklch_to_oklab([0.22, 0.035, 215.0]),
+                weight: 0.8,
             },
             Cluster {
-                oklab: oklch_to_oklab([0.5, 0.1, 100.0]),
-                weight: 0.01,
+                oklab: oklch_to_oklab([0.81, 0.186, 151.0]),
+                weight: 0.2,
             },
         ];
         let stats = ImageStats {
-            mean_l: 0.3,
-            mean_c: 0.02,
-            chromatic_mean_c: 0.04,
+            mean_l: 0.34,
+            mean_c: 0.065,
+            chromatic_mean_c: 0.065,
             is_dark: true,
         };
-        let lch = fallback_rotate(&clusters, 29.0, &stats, 30.0, 0.005);
-        // Rotated chroma is damped/capped, but should still track the vivid
-        // cluster's L (0.5), not the dull cluster's L (0.3).
-        assert!((lch[0] - 0.5).abs() < 1e-3);
+        let params = GenParams::default();
+        let p = build_primitives(&clusters, &stats, &params);
+        let primary = relative_chroma(p.highlight[&500].oklch);
+        let expected = primary * params.fallback_vibrancy;
+        for ramp in [&p.red, &p.blue, &p.magenta] {
+            let r = relative_chroma(ramp[&500].oklch);
+            assert!((r - expected).abs() < 0.02, "r={r} expected={expected}");
+        }
     }
 
     #[test]
-    fn fallback_rotate_ignores_vivid_cluster_below_min_weight() {
+    fn pick_vivid_accent_ignores_vivid_cluster_below_min_weight() {
         // A tiny, spuriously-vivid cluster (compression artifact, a couple
         // stray pixels) shouldn't outrank a properly-sized chromatic
         // cluster just because it's more saturated.
@@ -702,75 +1086,12 @@ mod tests {
                 weight: 0.3,
             },
             Cluster {
-                oklab: oklch_to_oklab([0.5, 0.1, 100.0]),
+                oklab: oklch_to_oklab([0.5, 0.1, 40.0]),
                 weight: 0.001,
             },
         ];
-        let stats = ImageStats {
-            mean_l: 0.3,
-            mean_c: 0.02,
-            chromatic_mean_c: 0.03,
-            is_dark: true,
-        };
-        let lch = fallback_rotate(&clusters, 29.0, &stats, 30.0, 0.005);
-        // L=0.3 clamped up to the 0.35 floor -- the dull cluster's L, not
-        // the vivid-but-too-small cluster's L=0.5.
-        assert!((lch[0] - 0.35).abs() < 1e-3);
-    }
-
-    #[test]
-    fn fallback_rotate_damps_chroma_less_for_a_near_miss_than_a_far_miss() {
-        // Both clusters are equally vivid and equally weighted; only their
-        // distance from target_hue=29.0 differs. A cluster just past
-        // tolerance=30 (hue 61, distance 32) is nearly a real match and
-        // should keep most of its chroma; one from the opposite side of the
-        // wheel (hue 209, distance 180) should be damped much harder.
-        let near_miss = vec![Cluster {
-            oklab: oklch_to_oklab([0.5, 0.2, 61.0]),
-            weight: 0.5,
-        }];
-        let far_miss = vec![Cluster {
-            oklab: oklch_to_oklab([0.5, 0.2, 209.0]),
-            weight: 0.5,
-        }];
-        let stats = ImageStats {
-            mean_l: 0.5,
-            mean_c: 0.1,
-            chromatic_mean_c: 0.2,
-            is_dark: false,
-        };
-        let near = fallback_rotate(&near_miss, 29.0, &stats, 30.0, 0.005);
-        let far = fallback_rotate(&far_miss, 29.0, &stats, 30.0, 0.005);
-        assert!(near[1] > far[1]);
-        // Far miss should land at (or very near) the floor confidence.
-        let expected_far_c =
-            0.2f32.min(stats.chromatic_mean_c.max(0.05) * 1.5) * FALLBACK_MIN_CONFIDENCE;
-        assert!((far[1] - expected_far_c).abs() < 1e-3);
-    }
-
-    #[test]
-    fn fallback_rotate_with_no_qualifying_cluster_gets_floor_confidence() {
-        // No cluster clears min_weight -- most_vivid returns None, so this
-        // is a pure stats-based guess and should get the same floor
-        // confidence as the worst-case rotation distance, not a computed
-        // in-between value.
-        let clusters = vec![Cluster {
-            oklab: oklch_to_oklab([0.5, 0.2, 61.0]),
-            weight: 0.001,
-        }];
-        let stats = ImageStats {
-            mean_l: 0.5,
-            mean_c: 0.1,
-            chromatic_mean_c: 0.2,
-            is_dark: false,
-        };
-        let lch = fallback_rotate(&clusters, 29.0, &stats, 30.0, 0.005);
-        let expected_c = stats
-            .mean_c
-            .max(0.05)
-            .min(stats.chromatic_mean_c.max(0.05) * 1.5)
-            * FALLBACK_MIN_CONFIDENCE;
-        assert!((lch[1] - expected_c).abs() < 1e-4);
+        let lch = pick_vivid_accent(&clusters, 0.005);
+        assert!((lch[2] - 100.0).abs() < 1e-2);
     }
 
     #[test]
@@ -872,7 +1193,7 @@ mod tests {
         // neutral ramp should carry its full anchor chroma at step 950,
         // unreduced by the taper that the chromatic ramps still apply.
         let neutral = generate_neutral_ramp([0.5, 0.1, 40.0], 0.1, 0.7);
-        let chromatic = generate_ramp([0.5, 0.1, 40.0], 0.1, 0.7);
+        let chromatic = generate_absolute_ramp([0.5, 0.1, 40.0], 0.1, 0.7);
         assert!((neutral[&950].oklch[1] - 0.1).abs() < 1e-4);
         assert!(neutral[&950].oklch[1] > chromatic[&950].oklch[1] + 0.03);
     }

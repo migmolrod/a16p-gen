@@ -123,19 +123,32 @@ shape.
    test wallpapers both methods agreed anyway. `a16p clusters` prints
    detected vs effective mode.
 4. `palette_gen::build_primitives`:
-   - For each of the 6 chromatic `HueSlot`s: compute the *true* Oklch hue
-     angle of the pure sRGB primary/secondary (`HueSlot::anchor_hue`, not
-     hardcoded — computed via actual color conversion so it's exact for
-     whatever the `palette` crate implements), then `match_hue` (nearest
-     cluster within `hue_tolerance` degrees, weight ≥ `min_cluster_weight`)
-     or `fallback_rotate` (rotate the most prominent chromatic cluster onto
-     the target hue, damping confidence via reduced chroma) if nothing
-     matches.
-   - `generate_ramp`: lightness curve per step (50→L≈0.95 down to
-     950→L≈0.15), bent per-hue toward each hue's own peak-chroma lightness
-     (`hue_lightness_bend`, see `HISTORY.md`), chroma capped by
-     `stats.mean_c * chroma_clamp_factor` and tapered near the ramp's edges
-     to reduce gamut clipping.
+   - `primary_vibrancy`: the vivid accent's (`pick_vivid_accent`)
+     *relative* chroma — C as a fraction of `color::max_chroma` at its own
+     L/hue — floored at `MIN_RELATIVE_CHROMA`. This is the vibrancy target
+     for every chromatic ramp, so ANSI colors feel as vivid as `primary`
+     regardless of how much of each hue the wallpaper has (see
+     `HISTORY.md`).
+   - For each of the 6 chromatic `HueSlot`s (`resolve_hue_slot`): compute
+     the *true* Oklch hue angle of the pure sRGB primary/secondary
+     (`HueSlot::anchor_hue`, not hardcoded — computed via actual color
+     conversion so it's exact for whatever the `palette` crate implements),
+     then `match_hue` (clusters within `hue_tolerance` degrees, weight ≥
+     `min_cluster_weight`; own hue family first, then most vivid) → anchor
+     hue shifted toward the cluster's by at most `hue_shift_limit` × the
+     gap to the neighbor on that side (`clamp_hue_shift`/`neighbor_gaps`,
+     with pure orange as an extra boundary between red and yellow), its own
+     relative chroma blended toward the primary's by `vibrancy_coherence`; or, if
+     nothing matches, the exact anchor hue at `fallback_vibrancy` × the
+     primary's vibrancy (a flat scale, not the old rotation-distance
+     damping — `fallback_rotate` is gone).
+   - `generate_ramp(hue, relative_chroma, bend)`: lightness curve per step
+     (50→L≈0.95 down to 950→L≈0.15), bent per-hue toward each hue's own
+     peak-chroma lightness (`hue_lightness_bend`, see `HISTORY.md`); each
+     step's chroma is the same fraction of `max_chroma` at that step's L,
+     shaped by `chroma_taper` (normalized to 1 at step 500). The absolute
+     cap `stats.chromatic_mean_c * chroma_clamp_factor` now only applies to
+     the neutral tint and `accent` (`generate_absolute_ramp`).
    - `neutral` ramp: hue/chroma blended between a flat baseline (weighted
      circular mean hue across all clusters, fixed `neutral_tint_chroma`)
      and the wallpaper's *vivid* accent (`pick_vivid_accent`), via
@@ -154,9 +167,9 @@ shape.
      wants literal matugen parity, but nothing in the default semantic
      mapping points at it.
    - `highlight` ramp (`pick_vivid_accent`): the most *vivid* cluster
-     clearing `min_cluster_weight`, not the most prevalent one — same
-     reasoning as the `fallback_rotate` fix below, and shares its
-     `most_vivid` helper. This is what `primary` maps to by default, and
+     clearing `min_cluster_weight`, not the most prevalent one (via the
+     `most_vivid` helper; see "small vivid accents got crushed" in
+     `HISTORY.md`). This is what `primary` maps to by default, and
      what the preview's "accent" swatch shows.
 5. `semantic::resolve` — parse `DEFAULT_SEMANTIC_TOML` (or user override via
    `Config::semantic` path), look up each `"ramp.step"` / `auto:*` value
@@ -231,8 +244,13 @@ calling it out, since it may be a deliberate v1 tradeoff rather than a bug.
   (ANSI slots, syntax, status all move together) — tune with
   `mode = "light"` + `preview`, not decided yet.
 
-- **Fixed:** `fallback_rotate`'s confidence damping was a flat, unexplained
-  constant — see `HISTORY.md`.
+- **Fixed:** wide `hue_tolerance` let a slot take a neighboring hue outright
+  (yellow → green, red → the orange primary, cyan = blue) — see `HISTORY.md`.
+- **Fixed:** ANSI ramps read pastel next to a neon primary (absolute chroma
+  cap, fallback damping, hue-dependent gamut) — see `HISTORY.md`.
+- **Superseded:** `fallback_rotate`'s confidence damping was a flat,
+  unexplained constant — fixed, then removed entirely by the relative
+  vibrancy change above; see `HISTORY.md`.
 - **Fixed:** naive per-channel gamut clamping instead of proper gamut
   mapping — see `HISTORY.md`.
 - **Fixed:** hue-agnostic lightness curve made vivid yellow read as
@@ -256,7 +274,8 @@ as a different architecture, it's the same primitive/semantic model: the
 branch needed — this is why the three-tier model was worth having.
 
 These constants (`hue_tolerance`, `chroma_clamp_factor`, `neutral_tint_chroma`,
-`min_cluster_weight`, `neutral_accent_influence`, `hue_lightness_bend`) are
+`min_cluster_weight`, `neutral_accent_influence`, `hue_lightness_bend`,
+`vibrancy_coherence`, `fallback_vibrancy`, `hue_shift_limit`) are
 the knobs — see `Config` in `src/config.rs` and `GenParams` in
 `src/palette_gen.rs`. `mise run preview -- ./wallpaper.jpg` is the fast loop
 for eyeballing changes; there's no automated "looks good" check because
@@ -264,7 +283,8 @@ that's inherently a perceptual judgment call.
 
 Every `Config` field is tunable via a TOML file rather than editing
 constants in source — see "Config file" below. `hue_tolerance`,
-`chroma_clamp_factor`, `min_cluster_weight`, `neutral_accent_influence`, and
+`vibrancy_coherence`, `fallback_vibrancy`, `min_cluster_weight`,
+`neutral_accent_influence`, and
 `hue_lightness_bend` are the ones actually worth iterating on per
 wallpaper; the rest rarely need touching.
 
@@ -289,19 +309,24 @@ path without touching anything. Mise wraps these as `config-init` /
 
 - `src/color.rs` — sRGB↔Oklab↔Oklch conversions, gamut mapping
   (`gamut_map_oklch`, chroma-reduction not per-channel clipping -- see
-  `HISTORY.md`), hex, circular hue distance, pure-primary corner
+  `HISTORY.md`), `max_chroma`/`relative_chroma` (gamut-relative vividness), hex, circular hue distance, pure-primary corner
   computation. Pure math, unit tested.
 - `src/extract.rs` — image loading/downsampling, k-means, image stats
   (`mean_c` vs `chromatic_mean_c`, see `HISTORY.md`). Unit tested
   (cluster separation, weight normalization, chromatic_mean_c behavior).
-- `src/palette_gen.rs` — hue matching/fallback (`match_hue` and
-  `fallback_rotate` both pick by chroma among clusters clearing
-  `min_weight`, not by weight or nearest angle; fallback also damps
-  confidence by rotation distance, see `HISTORY.md`), ramp generation
-  (neutral ramp skips `chroma_taper`, see `HISTORY.md`), primitives
-  assembly. Unit tested (monotonic ramps, chroma cap, hue matching/fallback
-  correctness including the vivid-vs-prevalent case and confidence damping,
-  anchor spread).
+- `src/palette_gen.rs` — hue matching (`match_hue` prefers own-family
+  clusters, then picks by chroma among clusters clearing `min_weight`, not
+  nearest angle), hue-shift limiting (`neighbor_gaps`, `clamp_hue_shift`), relative-vibrancy
+  slot resolution (`primary_vibrancy`, `resolve_hue_slot`), ramp
+  generation (relative `generate_ramp` for hue slots/highlight, absolute
+  for `accent`; neutral ramp skips `chroma_taper`, see `HISTORY.md`),
+  primitives assembly. Unit tested (monotonic ramps, same gamut fraction
+  across hues, in-gamut at full vibrancy, matched/unmatched slot vibrancy
+  and coherence blending, vibrancy floor, single-hue wallpaper end-to-end,
+  own-family preference, gap-relative hue clamping incl. the orange
+  boundary, no slot crossings below limit 0.5, yellow-stays-yellow and
+  red-≠-orange-primary regressions,
+  vivid-vs-prevalent, anchor spread).
 - `src/semantic.rs` — default mapping, `SemanticValue`/`ModePair`
   (fixed vs per-mode values), resolution logic. Unit tested (parses,
   resolves, `auto:bg`/`auto:fg` pick correctly, mode pairs pick the
@@ -336,7 +361,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (52 unit tests as of the dark/light mode pairs, all
+`mise run test` (61 unit tests as of the hue-shift limit, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify

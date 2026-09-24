@@ -59,6 +59,9 @@ pub struct Config {
     pub neutral_tint_chroma: f32,
     pub neutral_accent_influence: f32,
     pub hue_lightness_bend: f32,
+    pub vibrancy_coherence: f32,
+    pub fallback_vibrancy: f32,
+    pub hue_shift_limit: f32,
     pub mode: ThemeMode,
     pub dark_threshold: f32,
     pub semantic: Option<String>,
@@ -79,6 +82,9 @@ impl Default for Config {
             neutral_tint_chroma: defaults.neutral_tint_chroma,
             neutral_accent_influence: defaults.neutral_accent_influence,
             hue_lightness_bend: defaults.hue_lightness_bend,
+            vibrancy_coherence: defaults.vibrancy_coherence,
+            fallback_vibrancy: defaults.fallback_vibrancy,
+            hue_shift_limit: defaults.hue_shift_limit,
             mode: ThemeMode::Auto,
             dark_threshold: crate::extract::DEFAULT_DARK_THRESHOLD,
             semantic: None,
@@ -120,6 +126,9 @@ impl Config {
             neutral_tint_chroma: self.neutral_tint_chroma,
             neutral_accent_influence: self.neutral_accent_influence,
             hue_lightness_bend: self.hue_lightness_bend,
+            vibrancy_coherence: self.vibrancy_coherence,
+            fallback_vibrancy: self.fallback_vibrancy,
+            hue_shift_limit: self.hue_shift_limit,
         }
     }
 
@@ -145,8 +154,9 @@ max_dim = {max_dim}
 
 # Max degrees a cluster's hue may differ from a target ANSI hue (red/
 # yellow/green/cyan/blue/magenta) and still count as a direct match.
-# Lower = only very close hues match, more images fall back to hue
-# rotation. Higher = looser matches, risks calling orange "red".
+# Lower = only very close hues match, more slots fall back to their pure
+# hue. Higher = more slots pick up a wallpaper color; how far their hue
+# then moves is capped by hue_shift_limit, so orange can't become "red".
 hue_tolerance = {hue_tolerance}
 
 # Minimum cluster weight (fraction of image pixels, 0..1) required for a
@@ -158,14 +168,13 @@ hue_tolerance = {hue_tolerance}
 # ignored in favor of a larger but duller match.
 min_cluster_weight = {min_cluster_weight}
 
-# Ramp chroma is capped at (chromatic_mean_c * this factor), where
-# chromatic_mean_c is the weighted mean chroma of only the *chromatic*
-# clusters (near-gray/black clusters don't count) -- so a mostly-dark
-# wallpaper with a small vivid accent doesn't get its accent crushed just
-# because most of the image is achromatic. Lower = safer/more muted
-# colors closer to the wallpaper's actual saturation. Higher = more
-# vivid, more likely to look "off" from the image -- this is the wallust
-# failure mode this tool is meant to avoid.
+# Absolute chroma cap for the neutral ramp's accent tint (see
+# neutral_accent_influence) and the matugen-parity `accent` ramp: capped at
+# (chromatic_mean_c * this factor), where chromatic_mean_c is the weighted
+# mean chroma of only the *chromatic* clusters (near-gray/black clusters
+# don't count). Does NOT affect the red/yellow/.../magenta ramps or the
+# primary/highlight ramp -- their vividness follows the primary's, relative
+# to each hue's own gamut (see vibrancy_coherence).
 chroma_clamp_factor = {chroma_clamp_factor}
 
 # Chroma of the neutral/background ramp's baseline hue tint (used at
@@ -192,6 +201,33 @@ neutral_accent_influence = {neutral_accent_influence}
 # lightness ranges). Unlike neutral_accent_influence this isn't a style
 # choice, so it defaults on.
 hue_lightness_bend = {hue_lightness_bend}
+
+# The red/yellow/green/cyan/blue/magenta ramps are generated at the same
+# vibrancy as the primary color -- measured relative to how much chroma
+# each hue can reach at each lightness, so a neon green primary gives a
+# red that's equally neon *for a red*. Slots with no matching wallpaper
+# color always take the primary's vibrancy. For slots that DO match a
+# wallpaper color, this blends that color's own vibrancy toward the
+# primary's: 1 = every slot exactly as vivid as the primary (most
+# cohesive), 0 = matched colors keep the wallpaper's own saturation (a muted
+# blue stays muted next to a vivid primary).
+vibrancy_coherence = {vibrancy_coherence}
+
+# Vibrancy of hues with NO matching wallpaper color (see hue_tolerance), as
+# a fraction of the primary's: 1 = as vivid as the primary (can make an
+# absent hue, like magenta on an orange wallpaper, the loudest color in the
+# palette), lower = absent hues step back. Never drops below a floor that
+# keeps the ANSI hues distinguishable from each other.
+fallback_vibrancy = {fallback_vibrancy}
+
+# How far a slot that matched a wallpaper color may move its hue toward
+# that color, as a fraction of the distance to the neighboring ANSI hue
+# (red<->yellow, yellow<->green, ...). 0 = every slot stays on its pure
+# hue (only vibrancy comes from the wallpaper); 0.5 = up to halfway to the
+# neighbor; 1 = could reach it. Keeps yellow from turning green (or red
+# orange) when hue_tolerance is wide; hue_tolerance decides WHETHER a slot
+# matches, this decides how far its hue follows.
+hue_shift_limit = {hue_shift_limit}
 
 # Dark/light theme: "auto" (detect from the wallpaper), "dark" or "light".
 # Selects which side of each {{ dark = ..., light = ... }} semantic role
@@ -235,6 +271,9 @@ dark_threshold = {dark_threshold}
             neutral_tint_chroma = d.neutral_tint_chroma,
             neutral_accent_influence = d.neutral_accent_influence,
             hue_lightness_bend = d.hue_lightness_bend,
+            vibrancy_coherence = d.vibrancy_coherence,
+            fallback_vibrancy = d.fallback_vibrancy,
+            hue_shift_limit = d.hue_shift_limit,
             mode = d.mode.as_str(),
             dark_threshold = d.dark_threshold,
         )
@@ -255,5 +294,14 @@ mod tests {
             parsed.chroma_clamp_factor,
             Config::default().chroma_clamp_factor
         );
+        assert_eq!(
+            parsed.vibrancy_coherence,
+            Config::default().vibrancy_coherence
+        );
+        assert_eq!(
+            parsed.fallback_vibrancy,
+            Config::default().fallback_vibrancy
+        );
+        assert_eq!(parsed.hue_shift_limit, Config::default().hue_shift_limit);
     }
 }
