@@ -33,12 +33,16 @@ magenta_emphasis = "magenta.600"
 surface_ground = "auto:bg"
 surface_card = { dark = "neutral.900", light = "neutral.100" }
 surface_raised = { dark = "neutral.800", light = "neutral.200" }
-surface_border = { dark = "neutral.700", light = "neutral.300" }
+# ~2.6:1 (dark) / ~2.8:1 (light) against the background: visible, but a
+# notch below muted text so borders don't compete with content.
+surface_border = { dark = "neutral.600", light = "neutral.400" }
 
 text_color = "auto:fg"
-# The neutral ramp is lopsided (500 reads ~8-10:1 on a dark bg but <2:1
-# on a light one), so muted text needs a darker step in light mode.
-text_muted_color = { dark = "neutral.500", light = "neutral.700" }
+# Unbent, the neutral ramp is near-symmetric in contrast (500 reads ~3.7:1
+# on a dark bg, ~4.0:1 on a light one) -- too dim for text either way, so
+# muted text sits a step past 500 toward fg: dark 400 (~5.3:1). Light keeps
+# 700 (~8.2:1) rather than the mirror 600 (~5.8:1), which would only lower it.
+text_muted_color = { dark = "neutral.400", light = "neutral.700" }
 
 background = "auto:bg"
 foreground = "auto:fg"

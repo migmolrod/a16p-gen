@@ -482,7 +482,19 @@ pub fn generate_absolute_ramp(
     generate_absolute_ramp_inner(anchor_lch, chroma_cap, hue_lightness_bend, true)
 }
 
-/// Like `generate_absolute_ramp` but skips `chroma_taper`. `chroma_taper` exists to
+/// Like `generate_absolute_ramp` but skips both `chroma_taper` and the
+/// per-hue lightness bend.
+///
+/// No bend: `hue_lightness_bend` moves step 500 toward the lightness where
+/// the ramp's *hue* peaks in chroma -- a fix for vivid ramps (yellow reading
+/// olive), meaningless for a near-gray one whose chroma is tiny by design.
+/// Applied here anyway, it just lifted the whole middle of the ramp on
+/// green/amber-tinted wallpapers (their peaks sit at L~0.8-0.9): step 600
+/// (`ansi_color8`) landed at L~0.60-0.66 instead of ~0.45, reading as a mid
+/// gray rather than a bright black. Neutral steps now follow the plain
+/// lightness curve, so they mean the same thing on every wallpaper.
+///
+/// No taper: `chroma_taper` exists to
 /// keep vivid *chromatic* ramps (red/yellow/green/...) from relying on
 /// out-of-gamut chroma near the ramp's extremes -- but the neutral ramp's
 /// chroma is tiny by design (`neutral_tint_chroma` default 0.015, an order
@@ -497,12 +509,8 @@ pub fn generate_absolute_ramp(
 /// `swatch_from_oklch`) is still the real safety net for genuine
 /// out-of-gamut colors, so removing the extra taper here doesn't reopen the
 /// clipping problem the taper was originally added for.
-pub fn generate_neutral_ramp(
-    anchor_lch: [f32; 3],
-    chroma_cap: f32,
-    hue_lightness_bend: f32,
-) -> Ramp {
-    generate_absolute_ramp_inner(anchor_lch, chroma_cap, hue_lightness_bend, false)
+pub fn generate_neutral_ramp(anchor_lch: [f32; 3], chroma_cap: f32) -> Ramp {
+    generate_absolute_ramp_inner(anchor_lch, chroma_cap, 0.0, false)
 }
 
 fn generate_absolute_ramp_inner(
@@ -670,11 +678,7 @@ pub fn build_primitives(
     let vivid_chroma = vivid_accent[1].min(chroma_cap);
     let neutral_chroma = params.neutral_tint_chroma
         + (vivid_chroma - params.neutral_tint_chroma).max(0.0) * influence;
-    let neutral = generate_neutral_ramp(
-        [0.5, neutral_chroma, neutral_hue],
-        neutral_chroma,
-        params.hue_lightness_bend,
-    );
+    let neutral = generate_neutral_ramp([0.5, neutral_chroma, neutral_hue], neutral_chroma);
 
     let accent_anchor = pick_accent(clusters);
     let accent = generate_absolute_ramp(
@@ -1192,10 +1196,30 @@ mod tests {
         // specifically, since that's exactly where it bites hardest. The
         // neutral ramp should carry its full anchor chroma at step 950,
         // unreduced by the taper that the chromatic ramps still apply.
-        let neutral = generate_neutral_ramp([0.5, 0.1, 40.0], 0.1, 0.7);
+        let neutral = generate_neutral_ramp([0.5, 0.1, 40.0], 0.1);
         let chromatic = generate_absolute_ramp([0.5, 0.1, 40.0], 0.1, 0.7);
         assert!((neutral[&950].oklch[1] - 0.1).abs() < 1e-4);
         assert!(neutral[&950].oklch[1] > chromatic[&950].oklch[1] + 0.03);
+    }
+
+    #[test]
+    fn neutral_ramp_ignores_hue_lightness_bend() {
+        // A green- or amber-tinted neutral must land on the same plain
+        // lightness curve as any other: the bend is for vivid ramps only.
+        for hue in [
+            HueSlot::Yellow.anchor_hue(),
+            HueSlot::Green.anchor_hue(),
+            260.0,
+        ] {
+            let neutral = generate_neutral_ramp([0.5, 0.02, hue], 0.02);
+            for &step in RAMP_STEPS.iter() {
+                let l = neutral[&step].oklch[0];
+                assert!(
+                    (l - lightness_for_step(step)).abs() < 1e-4,
+                    "hue={hue} step={step}"
+                );
+            }
+        }
     }
 
     #[test]

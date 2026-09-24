@@ -318,3 +318,30 @@ worth keeping.
 Result at `hue_tolerance` 20/30/35 on all three test wallpapers: ANSI
 500 hues stay in wheel order with a ≥28° minimum gap. Witcher cyan/blue
 split the sky (216°/243°). Hollow Knight yellow `#bed664` (h120).
+
+### Neutral ramp was hue-bent, so `ansi_color8` read as a mid gray
+
+Color 8 ("bright black", `neutral.600` in dark mode) looked too bright —
+closer to a mid gray than to color 0. Cause: `generate_neutral_ramp` passed
+`hue_lightness_bend` through like the chromatic ramps. The bend moves step
+500 toward the lightness where the ramp's *hue* peaks in chroma — the fix
+for yellow reading olive — but a near-gray ramp has no chroma to preserve,
+so it only lifted the middle of the ramp. The test wallpapers' tints are
+green/amber, whose peaks sit at L≈0.8–0.9: `neutral.600` landed at
+L 0.60–0.66 (5–6:1 on the background) instead of the plain curve's 0.445,
+and every neutral step drifted by up to 0.05 L depending on the wallpaper.
+
+Remapping `ansi_color8` to `neutral.700` was tried first (L 0.47–0.51) and
+would have worked for color 8 alone, but it treated a symptom: the same lift
+pushed `text_muted_color`/`ansi_color7`/surfaces around. Fixed at the root
+instead — the neutral ramp now skips the bend and follows the plain
+lightness curve on every wallpaper. `ansi_color8` → L 0.44, ~2.6:1 on bg.
+
+That darkened the whole middle of the ramp, so two semantic roles were
+remapped to keep usable contrast: `text_muted_color` dark 500 → 400
+(3.7 → 5.3:1; light stays 700, ~8.2:1) and `surface_border` 700/300 →
+600/400 (dark 1.8 → 2.6:1, light 2.0 → 2.8:1). `ansi_color7` now reads as
+a clearly dimmed foreground (L 0.70, ~7.3:1) instead of nearly matching it
+(L 0.86 vs fg 0.93). Side effect: the ramp is now near-symmetric in
+contrast (500 ≈ 3.7:1 dark / 4.0:1 light), so the old "neutral ramp is
+lopsided" note on `text_muted_color` no longer applied.

@@ -159,7 +159,9 @@ shape.
      Built by `generate_neutral_ramp`, which (unlike the chromatic ramps)
      skips `chroma_taper` entirely, so the tint shows fully at every step
      including the ramp extremes (`background`/`ansi_color0` = step 950 for
-     dark wallpapers) — see `HISTORY.md`.
+     dark wallpapers), and skips `hue_lightness_bend`, so every neutral step
+     sits at the same lightness on every wallpaper (near-symmetric contrast:
+     500 ≈ 3.7:1 on dark bg, ≈ 4.0:1 on light) — see `HISTORY.md`.
    - `accent` ramp (`pick_accent`): the single highest-weight cluster,
      hue-unlocked — this is deliberately *exactly* what matugen extracts.
      For a mostly-dark/muted wallpaper, the most-prevalent color is often
@@ -238,12 +240,15 @@ calling it out, since it may be a deliberate v1 tradeoff rather than a bug.
 - **Open:** light mode's chromatic 500s (`success`/`warning`/`info`/
   `primary`, ANSI 1–6) are fixed across modes and read ~1.3–1.9:1 as text
   on a light background (measured on the real test wallpapers with
-  `mode = "light"`); ramps are lopsided toward light at 500, same reason
-  `text_muted_color` got `{ dark = 500, light = 700 }`. Likely fix is
+  `mode = "light"`, before relative vibrancy — re-measure); chromatic ramps
+  are still hue-bent and lopsided toward light at 500 (the neutral ramp no
+  longer is, see `HISTORY.md`). Likely fix is
   light-side pairs around 600–700, but it's a hue-balance judgment call
   (ANSI slots, syntax, status all move together) — tune with
   `mode = "light"` + `preview`, not decided yet.
 
+- **Fixed:** the neutral ramp was hue-bent, so `ansi_color8` read as a mid
+  gray and neutral steps drifted per wallpaper — see `HISTORY.md`.
 - **Fixed:** wide `hue_tolerance` let a slot take a neighboring hue outright
   (yellow → green, red → the orange primary, cyan = blue) — see `HISTORY.md`.
 - **Fixed:** ANSI ramps read pastel next to a neon primary (absolute chroma
@@ -319,7 +324,8 @@ path without touching anything. Mise wraps these as `config-init` /
   nearest angle), hue-shift limiting (`neighbor_gaps`, `clamp_hue_shift`), relative-vibrancy
   slot resolution (`primary_vibrancy`, `resolve_hue_slot`), ramp
   generation (relative `generate_ramp` for hue slots/highlight, absolute
-  for `accent`; neutral ramp skips `chroma_taper`, see `HISTORY.md`),
+  for `accent`; neutral ramp skips `chroma_taper` and the hue bend, see
+  `HISTORY.md`),
   primitives assembly. Unit tested (monotonic ramps, same gamut fraction
   across hues, in-gamut at full vibrancy, matched/unmatched slot vibrancy
   and coherence blending, vibrancy floor, single-hue wallpaper end-to-end,
@@ -361,7 +367,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (61 unit tests as of the hue-shift limit, all
+`mise run test` (62 unit tests as of the unbent neutral ramp, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify
