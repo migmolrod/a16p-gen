@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.97", targets = "x86_64-unknown-linux-musl" }
+rust = { version = "1.97", components = "rustfmt,clippy", targets = "x86_64-unknown-linux-musl" }
 
 [tasks.build]
 description = "Build debug binary"
