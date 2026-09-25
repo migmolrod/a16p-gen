@@ -32,22 +32,54 @@ polishing the palette generation algorithm itself against real
 wallpapers; a v2 with a substantially larger feature set is planned
 after that.
 
+## Install
+
+Prebuilt static binary (x86_64 Linux, any distro), installed to
+`${XDG_BIN_HOME:-~/.local/bin}/a16p` with its checksum verified:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/migmolrod/a16p-gen/master/install.sh | sh
+```
+
+Pass flags after `sh -s --`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/migmolrod/a16p-gen/master/install.sh | sh -s -- --init-config
+```
+
+| flag / env var | effect |
+| --- | --- |
+| `--init-config` | also write the commented default config (`a16p config init`) if none exists |
+| `--version v0.2.0` / `A16P_VERSION` | install a specific release instead of the latest |
+| `--bin-dir DIR` / `A16P_BIN_DIR` | install somewhere other than `~/.local/bin` |
+| `--uninstall` | remove the binary (your config is left in place) |
+
+**Upgrade** by rerunning the same one-liner. A config file is optional:
+without one, a16p uses built-in defaults, so the installer only touches
+`~/.config` when you pass `--init-config`.
+
+From source (needs a Rust toolchain; also the path for non-x86_64 machines):
+
+```sh
+cargo install --locked --git https://github.com/migmolrod/a16p-gen
+```
+
 ## Usage
 
 ```sh
 # terminal mockup + raw ANSI16 swatch, no files written -- the fast iteration loop
-mise run preview -- ./wallpaper.jpg
+a16p preview ./wallpaper.jpg
 
 # full run: writes primitives.json + semantic.json + component.json, also prints the preview
-mise run generate -- ./wallpaper.jpg -o ./out
+a16p generate ./wallpaper.jpg -o ./out
 
 # raw k-means clusters (weight/oklch/hex) + hue anchors -- for diagnosing why a slot matched or didn't
-cargo run -- clusters ./wallpaper.jpg
+a16p clusters ./wallpaper.jpg
 
 # render every [templates.*] entry from config.toml with the generated colors
-cargo run -- render ./wallpaper.jpg
-cargo run -- render ./wallpaper.jpg --dry-run   # print to stdout, write nothing
-cargo run -- render ./wallpaper.jpg --run-hooks # also run each template's post_hook
+a16p render ./wallpaper.jpg
+a16p render ./wallpaper.jpg --dry-run   # print to stdout, write nothing
+a16p render ./wallpaper.jpg --run-hooks # also run each template's post_hook
 ```
 
 `preview`/`generate` print a small terminal mockup (prompt, `ls`, log
@@ -57,13 +89,6 @@ in isolation — followed by a `background`/`accent`/`foreground` swatch row
 and the raw ANSI16 swatch for precise before/after comparison across config
 tweaks. "Accent" there is `primary` (see Output below) — the wallpaper's
 vivid, defining color, not just its most common color.
-
-Or without mise:
-
-```sh
-cargo run -- preview ./wallpaper.jpg
-cargo run -- generate ./wallpaper.jpg -o ./out
-```
 
 ### Config
 
@@ -76,9 +101,9 @@ the rest fall back to defaults. Resolution order:
 3. Otherwise built-in defaults, silently.
 
 ```sh
-mise run config-init          # write a fully-commented template to the XDG path
-mise run config-init -- --force  # overwrite an existing one
-mise run config-path          # print the resolved path
+a16p config init          # write a fully-commented template to the XDG path
+a16p config init --force  # overwrite an existing one
+a16p config path          # print the resolved path
 ```
 
 See `Config` in `src/config.rs` for all fields (cluster count `k`,
@@ -175,9 +200,28 @@ mise run test        # cargo test
 mise run lint         # cargo clippy -D warnings
 mise run fmt           # cargo fmt
 mise run ci              # fmt-check + lint + test
+mise run preview -- ./wallpaper.jpg   # cargo run -- preview (same for generate/config-init/config-path)
 ```
+
+### Releasing
+
+```sh
+# 1. bump `version` in Cargo.toml, commit
+mise run release-tag        # clean-tree check + ci + annotated v<version> tag
+git push --follow-tags      # the tag triggers .github/workflows/release.yml
+```
+
+The release workflow checks that the tag matches Cargo.toml, runs CI, builds
+the static musl tarball with `mise run dist`, and publishes it plus its
+`.sha256` as a GitHub Release, which is what `install.sh` downloads.
+`mise run dist` builds the same artifacts locally in `dist/`.
 
 Tuning the algorithm itself (hue-match tolerance, chroma clamping, ramp
 curve) is expected iteration — use `mise run preview` against real
 wallpapers and eyeball the swatch; there's no automated "looks good" check
 for this by nature.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.

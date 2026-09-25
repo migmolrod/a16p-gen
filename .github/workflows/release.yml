@@ -1,0 +1,38 @@
+name: release
+
+on:
+  push:
+    # GitHub filter globs, not regex: `+` = one or more of the preceding
+    # [0-9], `.` is literal. Coarse on purpose -- the version check below
+    # is the strict gate, since Cargo only accepts valid semver versions.
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Check tag matches Cargo.toml version
+        run: |
+          version="$(cargo pkgid | sed 's/.*[#@]//')"
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+      - run: mise run ci
+      - run: mise run dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Pre-release tags (v1.2.0-rc.1) become GitHub pre-releases, which
+        # releases/latest -- and so install.sh's default -- skips.
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.sha256 --generate-notes $prerelease

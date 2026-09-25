@@ -1,5 +1,5 @@
 [tools]
-rust = "1.97"
+rust = { version = "1.97", targets = "x86_64-unknown-linux-musl" }
 
 [tasks.build]
 description = "Build debug binary"
@@ -9,6 +9,44 @@ alias = "b"
 [tasks.release]
 description = "Build release binary"
 run = "cargo build --release"
+
+[tasks.dist]
+description = "Build the static release tarball + checksum into dist/ (what CI uploads)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+target=x86_64-unknown-linux-musl
+# Asset names carry no version on purpose: install.sh fetches
+# releases/latest/download/<name>, so renaming these breaks it.
+name="a16p-$target"
+cargo build --release --locked --target "$target"
+rm -rf dist
+mkdir -p "dist/$name"
+cp "target/$target/release/a16p" LICENSE-MIT LICENSE-APACHE README.md "dist/$name/"
+tar -C dist -czf "dist/$name.tar.gz" "$name"
+(cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+echo "built dist/$name.tar.gz"
+"""
+
+[tasks.release-tag]
+description = "Run CI checks, then create an annotated v<version> tag from Cargo.toml (does not push)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "$(git status --porcelain)" ]; then
+  echo "working tree is dirty; commit or stash first" >&2
+  exit 1
+fi
+version="$(cargo pkgid | sed 's/.*[#@]//')"
+tag="v$version"
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+  echo "tag $tag already exists; bump version in Cargo.toml first" >&2
+  exit 1
+fi
+mise run ci
+git tag -a "$tag" -m "a16p $tag"
+echo "created $tag -- publish the release with: git push --follow-tags"
+"""
 
 [tasks.test]
 description = "Run unit tests"

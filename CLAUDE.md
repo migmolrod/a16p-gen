@@ -43,6 +43,41 @@ template collection management, etc.) — scope for that phase isn't
 nailed down yet, so don't assume the deferred items above are its final
 shape.
 
+## Releases / installing a16p itself
+
+Distinct from the deferred v2 "dotfile installation" above: this is about
+getting the `a16p` binary onto a user's PATH without a Rust toolchain.
+Designed 2026-09-25. Channels are `install.sh` (curl | sh) plus
+`cargo install --locked --git` for developers and non-x86_64 machines. AUR
+and an artix-ansible role were considered and left out for now.
+
+- **Flow:** bump `version` in `Cargo.toml` → `mise run release-tag`
+  (clean-tree check, `ci`, annotated `v<version>` tag, *doesn't* push) →
+  user runs `git push --follow-tags` → `.github/workflows/release.yml`
+  (triggers only on `vX.Y.Z` / `vX.Y.Z-*` tags, the latter published as
+  GitHub pre-releases that `install.sh`'s default "latest" skips) checks
+  tag == Cargo.toml version, runs `mise run ci` + `mise run dist`,
+  and publishes with `gh release create --generate-notes`. Build logic
+  lives in mise tasks, so CI and local builds are the same.
+- **Target:** only `x86_64-unknown-linux-musl`, a static binary that
+  needs no musl-gcc because every dependency is pure Rust. The `image` crate uses
+  `default-features = false` plus explicit decoders. Its defaults pulled
+  in `rav1e` (an AVIF *encoder*, which can need nasm), and a16p never
+  encodes images. Trimming it left `preview` output byte-identical on the
+  test wallpapers. If you add a decoder format, add it to that feature list.
+- **Asset naming contract:** `a16p-x86_64-unknown-linux-musl.tar.gz`
+  (+ `.sha256`), with *no version in the name*. That lets `install.sh`
+  use `releases/latest/download/<asset>` with no GitHub API call or `jq`.
+  Renaming the assets in `mise run dist` breaks every installer run.
+- **`install.sh`:** POSIX sh. Rerunning upgrades (`install -m755` replaces
+  the binary atomically). It installs to `${XDG_BIN_HOME:-~/.local/bin}`
+  and only touches `~/.config` with `--init-config`, since the config is
+  optional. `--uninstall` keeps the config. `A16P_BASE_URL` is a hidden
+  test hook: point it at `python -m http.server` serving `dist/`, together
+  with a scratch `--bin-dir` and `XDG_CONFIG_HOME` (see Testing).
+- **License:** MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`), and
+  both files ship inside the tarball.
+
 ## Token model (PrimeNG-inspired three tiers)
 
 - **primitive** (`src/palette_gen.rs::Primitives`): generated ramps —

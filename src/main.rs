@@ -14,7 +14,11 @@ use config::Config;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "a16p", about = "Wallpaper-anchored ANSI16 palette generator")]
+#[command(
+    name = "a16p",
+    version,
+    about = "Wallpaper-anchored ANSI16 palette generator"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -206,7 +210,18 @@ fn main() -> Result<()> {
         } => {
             let cfg = Config::load(config.as_deref())?;
             if cfg.templates.is_empty() {
-                anyhow::bail!("no [templates.*] entries in config; nothing to render");
+                let path = config.unwrap_or_else(xdg::default_config_path);
+                if path.exists() {
+                    anyhow::bail!(
+                        "no [templates.*] entries in {}; nothing to render",
+                        path.display()
+                    );
+                }
+                anyhow::bail!(
+                    "no config at {}; run `a16p config init` for a commented \
+                     template, then add [templates.*] entries",
+                    path.display()
+                );
             }
             let pipeline = run_pipeline(&image, &cfg)?;
             let rendered =
