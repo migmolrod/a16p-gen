@@ -5,6 +5,7 @@ mod extract;
 mod palette_gen;
 mod preview;
 mod render;
+mod self_update;
 mod semantic;
 mod xdg;
 
@@ -50,6 +51,12 @@ enum Command {
         image: PathBuf,
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+    /// Update this binary to the latest GitHub release (release installs only)
+    SelfUpdate {
+        /// Only report whether a newer release exists; change nothing
+        #[arg(long)]
+        check: bool,
     },
     /// Render each configured [templates.*] entry with the generated colors
     Render {
@@ -202,6 +209,7 @@ fn main() -> Result<()> {
                 );
             }
         }
+        Command::SelfUpdate { check } => self_update::run(check)?,
         Command::Render {
             image,
             config,
