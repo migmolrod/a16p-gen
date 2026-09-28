@@ -345,3 +345,37 @@ a clearly dimmed foreground (L 0.70, ~7.3:1) instead of nearly matching it
 (L 0.86 vs fg 0.93). Side effect: the ramp is now near-symmetric in
 contrast (500 ≈ 3.7:1 dark / 4.0:1 light), so the old "neutral ramp is
 lopsided" note on `text_muted_color` no longer applied.
+
+### `hue_lightness_bend` pushed blue below readable contrast
+
+Blue text was nearly unreadable on dark backgrounds: `ansi_color4` came out
+at L 0.48, ~2.8:1 (`#2451c1`) on both pixel-art wallpapers and
+hollowknight-3. Blue was the only ANSI slot under 4.5:1. The bend
+moves step 500 toward the lightness where each hue peaks in *chroma*. That
+lifted yellow (peak L≈0.97) but pulled pure blue (peak L≈0.45) *below*
+the generic curve's 0.53. The bend chases vividness, and that only helped
+readability for hues that peak light.
+
+Shifting the blue anchor from 264° toward 200–210° was considered and
+rejected. Contrast depends almost entirely on L: at equal L and gamut
+fraction, h264/h240/h210 measure 4.8/5.0/5.2:1 at L 0.60. A lower hue would
+only have helped indirectly, because `peak_lightness_for_hue` interpolates
+toward cyan's high peak. Meanwhile blue would sit 10–15° from cyan (195°)
+and read teal at 210°, which would have forced cyan toward green in turn.
+Common themes keep blue at h245–264 and raise L instead (Tokyo Night
+`#7aa2f7` h264/L0.72, Catppuccin `#89b4fa` h260/L0.77).
+
+Fix: `min_mid_lightness` (default 0.62) floors step 500 after the bend,
+through the same monotonic t-warp. It applies to the six chromatic ramps
+and `highlight` (`primary`), but not to `accent` (matugen parity) or
+`neutral` (plain curve on purpose, see above). Result on the six test
+wallpapers: blue.500 is L 0.62 at 5.3–5.5:1 (`#5c83d7` on pixel-art-castle),
+hues unchanged, and the wallpaper's azure lean (243°) is kept. Red on the
+Hollow Knight wallpapers moved L 0.60 → 0.62 (4.6–4.8 → 5.0–5.2:1). No
+other slot moved. Hollowknight-3's `primary` is its blue, so it lifted too
+(`#3d59a5` → `#6e85bc`).
+
+Tradeoff: in `mode = "light"` blue was the one chromatic 500 that read
+fine on a light background. It now reads ~2.8:1 there, the same as red and
+magenta. This adds to the existing light-mode open item. It does not
+create a new one.

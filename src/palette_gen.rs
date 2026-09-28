@@ -417,15 +417,25 @@ fn lightness_for_step(step: u16) -> f32 {
 /// yellow). Step 50 (t≈0.053, not quite t=0) still shifts with `bend` --
 /// for a hue whose peak sits far from the generic step-500 lightness, the
 /// whole upper half of the ramp stretches toward it, not just step 500.
-fn lightness_for_step_bent(step: u16, hue: f32, bend: f32) -> f32 {
+///
+/// `min_mid` floors step 500's lightness after the bend. The bend chases
+/// peak *chroma*, which only helps readability for hues that peak light
+/// (yellow): pure blue peaks at L≈0.45, below the generic 0.53, so the bend
+/// pushed blue.500 down to L≈0.48 -- ~2.8:1 on a dark background. The floor
+/// lifts it without moving the blue anchor toward cyan: at equal L, hue
+/// barely changes contrast, so lightness is the lever, not hue (see
+/// `HISTORY.md`). Same warp, so the ramp stays monotonic with fixed ends.
+fn lightness_for_step_bent(step: u16, hue: f32, bend: f32, min_mid: f32) -> f32 {
     let t = step as f32 / 950.0;
-    if bend <= 0.0 {
+    let generic_mid = lightness_for_step(MID_STEP as u16);
+    if bend <= 0.0 && min_mid <= generic_mid {
         return lightness_for_step(step);
     }
     let anchor_t = MID_STEP / 950.0;
-    let generic_mid = lightness_for_step(MID_STEP as u16);
     let peak_l = peak_lightness_for_hue(hue);
-    let target_mid = (generic_mid + (peak_l - generic_mid) * bend).clamp(0.15, 0.95);
+    let target_mid = (generic_mid + (peak_l - generic_mid) * bend)
+        .max(min_mid)
+        .clamp(0.15, 0.95);
     let t_mid = ((0.95 - target_mid) / 0.80).clamp(0.0, 1.0);
     let t_warped = if t <= anchor_t {
         t / anchor_t * t_mid
@@ -453,13 +463,20 @@ fn chroma_taper(l: f32) -> f32 {
 /// what made ANSI slots read washed-out next to the primary. Also makes the
 /// taper a purely aesthetic shaping now, not a gamut-clipping guard: the
 /// relative target is in gamut by construction.
-pub fn generate_ramp(hue: f32, relative_chroma: f32, hue_lightness_bend: f32) -> Ramp {
+///
+/// `min_mid_lightness` floors step 500 (see `lightness_for_step_bent`).
+pub fn generate_ramp(
+    hue: f32,
+    relative_chroma: f32,
+    hue_lightness_bend: f32,
+    min_mid_lightness: f32,
+) -> Ramp {
     let r = relative_chroma.clamp(0.0, 1.0);
     let taper_mid = chroma_taper(lightness_for_step(MID_STEP as u16));
     RAMP_STEPS
         .iter()
         .map(|&step| {
-            let l = lightness_for_step_bent(step, hue, hue_lightness_bend);
+            let l = lightness_for_step_bent(step, hue, hue_lightness_bend, min_mid_lightness);
             // Taper against the step's *position* in the ramp -- see
             // `generate_absolute_ramp_inner`.
             let taper = chroma_taper(lightness_for_step(step)) / taper_mid;
@@ -524,7 +541,9 @@ fn generate_absolute_ramp_inner(
     RAMP_STEPS
         .iter()
         .map(|&step| {
-            let l = lightness_for_step_bent(step, hue, hue_lightness_bend);
+            // No lightness floor: `accent` is literal matugen parity and
+            // `neutral` must mean the same L on every wallpaper.
+            let l = lightness_for_step_bent(step, hue, hue_lightness_bend, 0.0);
             // Taper against the step's *position* in the ramp (the
             // pre-bend generic curve), not its final bent lightness --
             // otherwise bending a hue's mid-ramp lightness away from 0.5
@@ -586,6 +605,7 @@ pub struct GenParams {
     pub neutral_tint_chroma: f32,
     pub neutral_accent_influence: f32,
     pub hue_lightness_bend: f32,
+    pub min_mid_lightness: f32,
     pub vibrancy_coherence: f32,
     pub fallback_vibrancy: f32,
     pub hue_shift_limit: f32,
@@ -617,6 +637,10 @@ impl Default for GenParams {
             // hues span visibly different lightness ranges, which looks
             // inconsistent for a themed ANSI16 set.
             hue_lightness_bend: 0.7,
+            // ~5:1 against a dark background, about where red.500 already
+            // sat -- in practice it only lifts blue (bent to L≈0.48, ~2.8:1)
+            // and, marginally, red. Chromatic ramps and highlight only.
+            min_mid_lightness: 0.62,
             // Mostly, not fully, toward the primary: a slot that genuinely
             // matched a muted cluster (vivid greens/reds but soft blues)
             // gets lifted so it doesn't read pastel next to its neon
@@ -657,6 +681,7 @@ pub fn build_primitives(
                 anchor.hue,
                 anchor.relative_chroma,
                 params.hue_lightness_bend,
+                params.min_mid_lightness,
             ),
         );
     }
@@ -695,6 +720,7 @@ pub fn build_primitives(
         vivid_accent[2],
         relative_chroma(vivid_accent),
         params.hue_lightness_bend,
+        params.min_mid_lightness,
     );
 
     Primitives {
@@ -716,7 +742,7 @@ mod tests {
 
     #[test]
     fn ramp_is_monotonically_lighter_toward_low_steps() {
-        let ramp = generate_ramp(30.0, 0.8, 0.7);
+        let ramp = generate_ramp(30.0, 0.8, 0.7, 0.0);
         let l50 = ramp[&50].oklch[0];
         let l950 = ramp[&950].oklch[0];
         assert!(l50 > l950);
@@ -729,7 +755,7 @@ mod tests {
         // "neon for a red" as cyan.500 is for a cyan -- not the same
         // absolute C, which would be pastel for one and loud for the other.
         for slot in HueSlot::ALL {
-            let ramp = generate_ramp(slot.anchor_hue(), 0.8, 0.7);
+            let ramp = generate_ramp(slot.anchor_hue(), 0.8, 0.7, 0.0);
             let r = relative_chroma(ramp[&500].oklch);
             assert!((r - 0.8).abs() < 0.01, "{} r={r}", slot.name());
         }
@@ -739,7 +765,7 @@ mod tests {
     fn ramp_stays_in_gamut_at_full_vibrancy() {
         // r=1 targets max_chroma exactly at every step, so gamut mapping in
         // swatch_from_oklch should be a no-op (chroma not reduced).
-        let ramp = generate_ramp(HueSlot::Magenta.anchor_hue(), 1.0, 0.7);
+        let ramp = generate_ramp(HueSlot::Magenta.anchor_hue(), 1.0, 0.7, 0.0);
         for (&step, swatch) in &ramp {
             let max = max_chroma(swatch.oklch[0], swatch.oklch[2]);
             assert!(swatch.oklch[1] <= max + 1e-4, "step={step}");
@@ -752,7 +778,7 @@ mod tests {
         // just at the endpoints, for every bend strength -- otherwise a
         // "lighter" step could render darker than a step above it.
         for bend in [0.0, 0.3, 0.7, 1.0] {
-            let ramp = generate_ramp(95.0, 0.8, bend);
+            let ramp = generate_ramp(95.0, 0.8, bend, 0.0);
             let mut prev_l = f32::INFINITY;
             for &step in RAMP_STEPS.iter() {
                 let l = ramp[&step].oklch[0];
@@ -769,11 +795,60 @@ mod tests {
         // step 500 toward that peak, which is the actual fix for the
         // "mid-ramp yellow reads as olive/brown" rough edge.
         let yellow_hue = HueSlot::Yellow.anchor_hue();
-        let flat = generate_ramp(yellow_hue, 0.5, 0.0);
-        let bent = generate_ramp(yellow_hue, 0.5, 0.7);
+        let flat = generate_ramp(yellow_hue, 0.5, 0.0, 0.0);
+        let bent = generate_ramp(yellow_hue, 0.5, 0.7, 0.0);
         assert!(bent[&500].oklch[0] > flat[&500].oklch[0] + 0.1);
         // The true curve floor (step 950, t=1) stays put regardless of bend.
         assert!((bent[&950].oklch[0] - flat[&950].oklch[0]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn lightness_floor_lifts_blue_500_off_the_bend() {
+        // Regression: blue peaks at L≈0.45, so the bend alone dragged
+        // blue.500 below the generic curve to L≈0.48 (~2.8:1 on dark bg).
+        let blue = HueSlot::Blue.anchor_hue();
+        let bent = generate_ramp(blue, 0.9, 0.7, 0.0);
+        assert!(bent[&500].oklch[0] < 0.5);
+        let floored = generate_ramp(blue, 0.9, 0.7, 0.62);
+        assert!((floored[&500].oklch[0] - 0.62).abs() < 1e-3);
+        // Hue stays blue: the floor is a lightness fix, not a hue shift.
+        assert!(circular_diff(floored[&500].oklch[2], blue).abs() < 1.0);
+        // Ramp ends don't move.
+        assert!((floored[&950].oklch[0] - bent[&950].oklch[0]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn lightness_floor_leaves_hues_already_above_it_alone() {
+        // Yellow/green/cyan bend well above any sane floor.
+        for slot in [HueSlot::Yellow, HueSlot::Green, HueSlot::Cyan] {
+            let hue = slot.anchor_hue();
+            let plain = generate_ramp(hue, 0.8, 0.7, 0.0);
+            let floored = generate_ramp(hue, 0.8, 0.7, 0.62);
+            for &step in RAMP_STEPS.iter() {
+                assert_eq!(
+                    plain[&step].hex,
+                    floored[&step].hex,
+                    "{} {step}",
+                    slot.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lightness_floor_keeps_ramp_monotonic() {
+        for slot in HueSlot::ALL {
+            for floor in [0.62, 0.7, 0.9] {
+                let ramp = generate_ramp(slot.anchor_hue(), 0.8, 0.7, floor);
+                let mut prev_l = f32::INFINITY;
+                for &step in RAMP_STEPS.iter() {
+                    let l = ramp[&step].oklch[0];
+                    assert!(l <= prev_l, "{} floor={floor} step={step}", slot.name());
+                    prev_l = l;
+                }
+                assert!(ramp[&500].oklch[0] >= floor - 1e-3, "{}", slot.name());
+            }
+        }
     }
 
     #[test]

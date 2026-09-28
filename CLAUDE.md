@@ -183,7 +183,10 @@ and an artix-ansible role were considered and left out for now.
      damping — `fallback_rotate` is gone).
    - `generate_ramp(hue, relative_chroma, bend)`: lightness curve per step
      (50→L≈0.95 down to 950→L≈0.15), bent per-hue toward each hue's own
-     peak-chroma lightness (`hue_lightness_bend`, see `HISTORY.md`); each
+     peak-chroma lightness (`hue_lightness_bend`, see `HISTORY.md`), then
+     floored at `min_mid_lightness` for step 500 (the bend drags blue *down*,
+     since pure blue peaks at L≈0.45; the floor applies to chromatic ramps
+     and `highlight` only); each
      step's chroma is the same fraction of `max_chroma` at that step's L,
      shaped by `chroma_taper` (normalized to 1 at step 500). The absolute
      cap `stats.chromatic_mean_c * chroma_clamp_factor` now only applies to
@@ -279,13 +282,17 @@ calling it out, since it may be a deliberate v1 tradeoff rather than a bug.
 - **Open:** light mode's chromatic 500s (`success`/`warning`/`info`/
   `primary`, ANSI 1–6) are fixed across modes and read ~1.3–1.9:1 as text
   on a light background (measured on the real test wallpapers with
-  `mode = "light"`, before relative vibrancy — re-measure); chromatic ramps
+  `mode = "light"`, before relative vibrancy — re-measure; blue joined
+  them at ~2.8:1 once `min_mid_lightness` lifted it for dark mode); chromatic ramps
   are still hue-bent and lopsided toward light at 500 (the neutral ramp no
   longer is, see `HISTORY.md`). Likely fix is
   light-side pairs around 600–700, but it's a hue-balance judgment call
   (ANSI slots, syntax, status all move together) — tune with
   `mode = "light"` + `preview`, not decided yet.
 
+- **Fixed:** `hue_lightness_bend` pushed blue.500 to L≈0.48 (~2.8:1 on
+  dark bg). A `min_mid_lightness` floor fixes it. Moving the blue anchor
+  toward 200–210° was rejected (it would crowd cyan) — see `HISTORY.md`.
 - **Fixed:** the neutral ramp was hue-bent, so `ansi_color8` read as a mid
   gray and neutral steps drifted per wallpaper — see `HISTORY.md`.
 - **Fixed:** wide `hue_tolerance` let a slot take a neighboring hue outright
@@ -319,7 +326,8 @@ branch needed — this is why the three-tier model was worth having.
 
 These constants (`hue_tolerance`, `chroma_clamp_factor`, `neutral_tint_chroma`,
 `min_cluster_weight`, `neutral_accent_influence`, `hue_lightness_bend`,
-`vibrancy_coherence`, `fallback_vibrancy`, `hue_shift_limit`) are
+`min_mid_lightness`, `vibrancy_coherence`, `fallback_vibrancy`,
+`hue_shift_limit`) are
 the knobs — see `Config` in `src/config.rs` and `GenParams` in
 `src/palette_gen.rs`. `mise run preview -- ./wallpaper.jpg` is the fast loop
 for eyeballing changes; there's no automated "looks good" check because
@@ -341,6 +349,11 @@ Linux-only plain env lookup, no `dirs` crate) → `Config::default()`
 silently if neither exists. The whole-struct `#[serde(default)]` means a
 config file only needs to set the fields being tuned; everything else
 falls back.
+
+`schema/config.schema.json` (referenced via `"$schema"` from the user's
+config for editor completion) is hand-maintained, not generated. A new
+`Config` field needs an entry there too, and usually one in the
+artix-ansible `config.toml` (see Templates).
 
 `a16p config init` writes `Config::annotated_default_toml()` — a
 comment-per-field template with defaults interpolated from
@@ -406,7 +419,7 @@ path without touching anything. Mise wraps these as `config-init` /
 
 ## Testing
 
-`mise run test` (62 unit tests as of the unbent neutral ramp, all
+`mise run test` (65 unit tests as of `min_mid_lightness`, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify

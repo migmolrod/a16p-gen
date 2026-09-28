@@ -59,6 +59,7 @@ pub struct Config {
     pub neutral_tint_chroma: f32,
     pub neutral_accent_influence: f32,
     pub hue_lightness_bend: f32,
+    pub min_mid_lightness: f32,
     pub vibrancy_coherence: f32,
     pub fallback_vibrancy: f32,
     pub hue_shift_limit: f32,
@@ -82,6 +83,7 @@ impl Default for Config {
             neutral_tint_chroma: defaults.neutral_tint_chroma,
             neutral_accent_influence: defaults.neutral_accent_influence,
             hue_lightness_bend: defaults.hue_lightness_bend,
+            min_mid_lightness: defaults.min_mid_lightness,
             vibrancy_coherence: defaults.vibrancy_coherence,
             fallback_vibrancy: defaults.fallback_vibrancy,
             hue_shift_limit: defaults.hue_shift_limit,
@@ -126,6 +128,7 @@ impl Config {
             neutral_tint_chroma: self.neutral_tint_chroma,
             neutral_accent_influence: self.neutral_accent_influence,
             hue_lightness_bend: self.hue_lightness_bend,
+            min_mid_lightness: self.min_mid_lightness,
             vibrancy_coherence: self.vibrancy_coherence,
             fallback_vibrancy: self.fallback_vibrancy,
             hue_shift_limit: self.hue_shift_limit,
@@ -202,6 +205,14 @@ neutral_accent_influence = {neutral_accent_influence}
 # choice, so it defaults on.
 hue_lightness_bend = {hue_lightness_bend}
 
+# Minimum Oklab lightness (0-1) for step 500 of the red/yellow/green/cyan/
+# blue/magenta ramps and the primary, applied after hue_lightness_bend.
+# The bend chases each hue's peak chroma, and pure blue peaks dark (L≈0.45),
+# so without a floor blue.500 is nearly unreadable on a dark background.
+# 0.62 ≈ 5:1 contrast on a near-black bg; 0.65-0.70 ≈ 6-7.5:1 (paler blue).
+# 0 disables it. Raising it makes light mode's 500s even lighter.
+min_mid_lightness = {min_mid_lightness}
+
 # The red/yellow/green/cyan/blue/magenta ramps are generated at the same
 # vibrancy as the primary color -- measured relative to how much chroma
 # each hue can reach at each lightness, so a neon green primary gives a
@@ -271,6 +282,7 @@ dark_threshold = {dark_threshold}
             neutral_tint_chroma = d.neutral_tint_chroma,
             neutral_accent_influence = d.neutral_accent_influence,
             hue_lightness_bend = d.hue_lightness_bend,
+            min_mid_lightness = d.min_mid_lightness,
             vibrancy_coherence = d.vibrancy_coherence,
             fallback_vibrancy = d.fallback_vibrancy,
             hue_shift_limit = d.hue_shift_limit,
