@@ -79,9 +79,12 @@ and an artix-ansible role were considered and left out for now.
   binary being replaced may be the one running `self-update` (plain
   `install` onto the target isn't a rename). It installs to `${XDG_BIN_HOME:-~/.local/bin}`
   and only touches `~/.config` with `--init-config`, since the config is
-  optional. `--uninstall` keeps the config. `A16P_BASE_URL` is a hidden
-  test hook: point it at `python -m http.server` serving `dist/`, together
-  with a scratch `--bin-dir` and `XDG_CONFIG_HOME` (see Testing).
+  optional. `--uninstall` keeps the config. Hidden test hooks:
+  `A16P_BASE_URL` replaces `https://github.com/<repo>/releases` (so the
+  server must serve `/latest/download/<asset>` and
+  `/download/<tag>/<asset>`, as GitHub does), and `A16P_API_URL` replaces
+  `https://api.github.com`. Use them with a scratch `--bin-dir` and
+  `XDG_CONFIG_HOME` (see Testing).
 - **`a16p self-update`** (`src/self_update.rs`, added 2026-09-28):
   a subcommand, not a `--update` flag, following `rustup self update` and
   `uv self update`. Finds the latest tag from the `releases/latest`
@@ -92,12 +95,33 @@ and an artix-ansible role were considered and left out for now.
   that dependency weight. Refuses (before any network access) for
   binaries in `$CARGO_HOME/bin` (it prints the `cargo install --force`
   command) and dev builds under `target/{debug,release}`. `--check` only
-  reports. Test hooks: `A16P_RELEASES_URL`/`A16P_INSTALL_URL` (plus
-  `install.sh`'s `A16P_BASE_URL`) against a local server that answers
-  `/releases/latest` with a 302 to `/releases/tag/vX.Y.Z`. Plain
+  reports. Test hooks: `A16P_RELEASES_URL`/`A16P_API_URL`/
+  `A16P_INSTALL_URL` (plus `install.sh`'s own, which it inherits). Plain
   `http.server` can't do the redirect, so use a tiny handler.
   Neither this nor `install.sh` works while the GitHub repo is private
-  (anonymous downloads 404). Publishing it is planned.
+  (anonymous downloads 404). The repo went public on 2026-09-28.
+- **Prerelease channel** (`--prerelease` on both `install.sh` and
+  `self-update`, added 2026-09-28 for v0.1.3): `releases/latest` never
+  points at a prerelease, so this path lists releases through the API
+  (`/repos/<repo>/releases?per_page=100`, unauthenticated, 60 requests/h;
+  `self-update` sends `GITHUB_TOKEN` over stdin, and only to the real API).
+  "Newest" means the **highest semver across stable and prerelease tags**,
+  not the latest publish date. That way an rc user moves on to the final
+  release, and a hotfix on an older line published later doesn't win.
+  Rust uses the `semver` crate for ordering. `install.sh` greps
+  `"tag_name"`, maps the first `-` to `~` and uses GNU `sort -V`
+  (`~` sorts before everything, which matches semver's rule that 1.2.0-rc.1
+  < 1.2.0). The channel is **sticky without stored state**: when the
+  running binary's own version has a prerelease part, `self-update`
+  includes prereleases automatically. It only updates to a strictly
+  higher version, which also fixed a bug from before this change: a
+  prerelease build compared with `!=` and would "update" *down* to the
+  latest stable release. Mock server for tests: answer
+  `/releases/latest` with a 302 to `/releases/tag/<tag>`, serve
+  `/releases/{latest/download,download/<tag>}/<asset>`, and serve
+  `/repos/<repo>/releases` as JSON. Build real tarballs per fake version
+  by temporarily bumping `Cargo.toml` (plus `cargo update -p a16p
+  --offline`, since `dist` builds with `--locked`), then revert.
 - **License:** MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`), and
   both files ship inside the tarball.
 
@@ -440,12 +464,14 @@ path without touching anything. Mise wraps these as `config-init` /
   `clusters` for raw k-means diagnostics, `render` for template
   rendering, `self-update`), wires the pipeline.
 - `src/self_update.rs` — `a16p self-update` (see Releases section). Unit
-  tested (version parsing/ordering, tag extraction from the redirect URL,
-  cargo/dev-build refusal).
+  tested (semver tag parsing and prerelease ordering, highest-semver
+  release selection incl. hotfix-published-later and draft/non-version
+  skipping, sticky prerelease channel, tag extraction from the redirect
+  URL, cargo/dev-build refusal).
 
 ## Testing
 
-`mise run test` (73 unit tests as of `self-update`, all
+`mise run test` (76 unit tests as of the prerelease channel, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify

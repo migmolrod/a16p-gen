@@ -57,6 +57,10 @@ enum Command {
         /// Only report whether a newer release exists; change nothing
         #[arg(long)]
         check: bool,
+        /// Also consider prereleases (rc/beta/...); implied when the running
+        /// binary is itself a prerelease, until it reaches a stable release
+        #[arg(long)]
+        prerelease: bool,
     },
     /// Render each configured [templates.*] entry with the generated colors
     Render {
@@ -209,7 +213,7 @@ fn main() -> Result<()> {
                 );
             }
         }
-        Command::SelfUpdate { check } => self_update::run(check)?,
+        Command::SelfUpdate { check, prerelease } => self_update::run(check, prerelease)?,
         Command::Render {
             image,
             config,

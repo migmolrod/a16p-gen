@@ -4,6 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/migmolrod/a16p-gen/master/install.sh | sh
 #   ... | sh -s -- --init-config        also write the default config if missing
 #   ... | sh -s -- --version v0.2.0     install a specific release
+#   ... | sh -s -- --prerelease         install the newest release, prereleases
+#                                       (rc/beta/...) included
 #   ... | sh -s -- --bin-dir ~/bin      install somewhere other than ~/.local/bin
 #   ... | sh -s -- --uninstall          remove the binary (config is kept)
 #
@@ -16,6 +18,7 @@ ASSET="a16p-$TARGET.tar.gz"
 
 version="${A16P_VERSION:-latest}"
 bin_dir="${A16P_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
+prerelease="${A16P_PRERELEASE:-0}"
 init_config=0
 uninstall=0
 
@@ -30,6 +33,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version) [ $# -ge 2 ] || die "--version needs a value"; version="$2"; shift 2 ;;
         --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a value"; bin_dir="$2"; shift 2 ;;
+        --prerelease) prerelease=1; shift ;;
         --init-config) init_config=1; shift ;;
         --uninstall) uninstall=1; shift ;;
         -h | --help) usage; exit 0 ;;
@@ -60,14 +64,8 @@ if [ "$os" != "Linux" ] || [ "$arch" != "x86_64" ]; then
     cargo install --locked --git https://github.com/$REPO"
 fi
 
-# A16P_BASE_URL is for testing against a local server serving dist/.
-if [ -n "${A16P_BASE_URL:-}" ]; then
-    base="$A16P_BASE_URL"
-elif [ "$version" = "latest" ]; then
-    base="https://github.com/$REPO/releases/latest/download"
-else
-    case "$version" in v*) ;; *) version="v$version" ;; esac
-    base="https://github.com/$REPO/releases/download/$version"
+if [ "$prerelease" = 1 ] && [ "$version" != "latest" ]; then
+    die "--prerelease and --version are mutually exclusive"
 fi
 
 if command -v curl >/dev/null 2>&1; then
@@ -81,6 +79,35 @@ command -v sha256sum >/dev/null 2>&1 || die "need sha256sum"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
+
+# A16P_BASE_URL / A16P_API_URL are for testing against a local server that
+# mimics github.com/<repo>/releases and api.github.com.
+releases="${A16P_BASE_URL:-https://github.com/$REPO/releases}"
+api="${A16P_API_URL:-https://api.github.com}"
+
+# releases/latest never points at a prerelease, so --prerelease asks the
+# API for every release and takes the highest semver, stable or not (an
+# rc user gets the final release once it ships; a hotfix on an older line
+# published later doesn't win). Semver puts 1.2.0-rc.1 *before* 1.2.0;
+# `sort -V` gets that right once `-` becomes `~`, which version sort
+# orders before everything, even end of string. Unauthenticated: 60 req/h.
+if [ "$prerelease" = 1 ]; then
+    fetch "$api/repos/$REPO/releases?per_page=100" "$tmp/releases.json" ||
+        die "could not list releases from $api"
+    version="$(tr ',' '\n' < "$tmp/releases.json" |
+        sed -n 's/^[[:space:]{]*"tag_name"[[:space:]]*:[[:space:]]*"\(v[0-9][^"]*\)".*/\1/p' |
+        grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' |
+        sed 's/-/~/' | sort -V | tail -n 1 | sed 's/~/-/')" || true
+    [ -n "$version" ] || die "no published release found"
+    say "newest release including prereleases: $version"
+fi
+
+if [ "$version" = "latest" ]; then
+    base="$releases/latest/download"
+else
+    case "$version" in v*) ;; *) version="v$version" ;; esac
+    base="$releases/download/$version"
+fi
 
 say "downloading $base/$ASSET"
 fetch "$base/$ASSET" "$tmp/$ASSET" || die "download failed: $base/$ASSET"
