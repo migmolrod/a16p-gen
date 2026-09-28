@@ -1,10 +1,13 @@
 name: ci
 
+# No master here: under git flow master only receives tagged release/hotfix
+# merges, and release.yml runs `mise run ci` on every tag before publishing,
+# so running it again for the master push would test the same commit twice.
 on:
   push:
-    branches: [master]
+    branches: [develop, "release/**", "hotfix/**"]
   pull_request:
-    branches: [master]
+    branches: [develop, master]
 
 jobs:
   ci:

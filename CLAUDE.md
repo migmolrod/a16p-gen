@@ -59,6 +59,11 @@ and an artix-ansible role were considered and left out for now.
   tag == Cargo.toml version, runs `mise run ci` + `mise run dist`,
   and publishes with `gh release create --generate-notes`. Build logic
   lives in mise tasks, so CI and local builds are the same.
+  `.github/workflows/ci.yml` deliberately does *not* run on pushes to
+  `master` (2026-09-28): under git flow, master only receives tagged
+  release/hotfix merges, and `release.yml` already runs CI on those, so it
+  ran twice per release. It runs on `develop`, `release/**`, `hotfix/**`
+  and PRs into `develop`/`master`.
 - **Target:** only `x86_64-unknown-linux-musl`, a static binary that
   needs no musl-gcc because every dependency is pure Rust. The `image` crate uses
   `default-features = false` plus explicit decoders. Its defaults pulled
@@ -69,12 +74,30 @@ and an artix-ansible role were considered and left out for now.
   (+ `.sha256`), with *no version in the name*. That lets `install.sh`
   use `releases/latest/download/<asset>` with no GitHub API call or `jq`.
   Renaming the assets in `mise run dist` breaks every installer run.
-- **`install.sh`:** POSIX sh. Rerunning upgrades (`install -m755` replaces
-  the binary atomically). It installs to `${XDG_BIN_HOME:-~/.local/bin}`
+- **`install.sh`:** POSIX sh. Rerunning upgrades: it stages `a16p.new`
+  next to the target and `mv`s it over, a true atomic rename, because the
+  binary being replaced may be the one running `self-update` (plain
+  `install` onto the target isn't a rename). It installs to `${XDG_BIN_HOME:-~/.local/bin}`
   and only touches `~/.config` with `--init-config`, since the config is
   optional. `--uninstall` keeps the config. `A16P_BASE_URL` is a hidden
   test hook: point it at `python -m http.server` serving `dist/`, together
   with a scratch `--bin-dir` and `XDG_CONFIG_HOME` (see Testing).
+- **`a16p self-update`** (`src/self_update.rs`, added 2026-09-28):
+  a subcommand, not a `--update` flag, following `rustup self update` and
+  `uv self update`. Finds the latest tag from the `releases/latest`
+  redirect via `curl` (no API, no `jq`), compares it to
+  `CARGO_PKG_VERSION`, then pipes `install.sh --version <tag> --bin-dir
+  <dir of current_exe>` into `sh`. There's one updater implementation, and
+  no HTTP/TLS crates: the `self_update` crate was rejected for exactly
+  that dependency weight. Refuses (before any network access) for
+  binaries in `$CARGO_HOME/bin` (it prints the `cargo install --force`
+  command) and dev builds under `target/{debug,release}`. `--check` only
+  reports. Test hooks: `A16P_RELEASES_URL`/`A16P_INSTALL_URL` (plus
+  `install.sh`'s `A16P_BASE_URL`) against a local server that answers
+  `/releases/latest` with a 302 to `/releases/tag/vX.Y.Z`. Plain
+  `http.server` can't do the redirect, so use a tiny handler.
+  Neither this nor `install.sh` works while the GitHub repo is private
+  (anonymous downloads 404). Publishing it is planned.
 - **License:** MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`), and
   both files ship inside the tarball.
 
@@ -415,11 +438,14 @@ path without touching anything. Mise wraps these as `config-init` /
   approximate "does this look like a real terminal."
 - `src/main.rs` — clap CLI (`generate`, `preview`, `config init`/`path`,
   `clusters` for raw k-means diagnostics, `render` for template
-  rendering), wires the pipeline.
+  rendering, `self-update`), wires the pipeline.
+- `src/self_update.rs` — `a16p self-update` (see Releases section). Unit
+  tested (version parsing/ordering, tag extraction from the redirect URL,
+  cargo/dev-build refusal).
 
 ## Testing
 
-`mise run test` (65 unit tests as of `min_mid_lightness`, all
+`mise run test` (73 unit tests as of `self-update`, all
 pure-function — no image fixtures needed). For pipeline-level sanity
 checks, synthetic test images were generated with Python/Pillow (not
 committed, were scratch files) — a colorful patchwork image to verify

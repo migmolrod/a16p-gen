@@ -54,7 +54,10 @@ curl -fsSL https://raw.githubusercontent.com/migmolrod/a16p-gen/master/install.s
 | `--bin-dir DIR` / `A16P_BIN_DIR` | install somewhere other than `~/.local/bin` |
 | `--uninstall` | remove the binary (your config is left in place) |
 
-**Upgrade** by rerunning the same one-liner. A config file is optional:
+**Upgrade** with `a16p self-update` (or rerun the same one-liner;
+`a16p self-update --check` only reports whether a newer release exists).
+It updates the binary in place, wherever it was installed, and refuses to
+touch a `cargo install`ed one. A config file is optional:
 without one, a16p uses built-in defaults, so the installer only touches
 `~/.config` when you pass `--init-config`.
 
