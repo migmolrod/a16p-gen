@@ -51,13 +51,17 @@ curl -fsSL https://raw.githubusercontent.com/migmolrod/a16p-gen/master/install.s
 | --- | --- |
 | `--init-config` | also write the commented default config (`a16p config init`) if none exists |
 | `--version v0.2.0` / `A16P_VERSION` | install a specific release instead of the latest |
+| `--prerelease` / `A16P_PRERELEASE=1` | install the newest release, prereleases (`-rc.1`, `-beta.2`, ...) included |
 | `--bin-dir DIR` / `A16P_BIN_DIR` | install somewhere other than `~/.local/bin` |
 | `--uninstall` | remove the binary (your config is left in place) |
 
 **Upgrade** with `a16p self-update` (or rerun the same one-liner;
 `a16p self-update --check` only reports whether a newer release exists).
 It updates the binary in place, wherever it was installed, and refuses to
-touch a `cargo install`ed one. A config file is optional:
+touch a `cargo install`ed one. `a16p self-update --prerelease` opts into
+prereleases. Once you're on one, plain `a16p self-update` keeps following
+them until the final release ships, then goes back to stable-only.
+It never downgrades. A config file is optional:
 without one, a16p uses built-in defaults, so the installer only touches
 `~/.config` when you pass `--init-config`.
 
