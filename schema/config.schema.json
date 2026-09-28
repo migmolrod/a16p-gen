@@ -67,6 +67,13 @@
       "default": 0.7,
       "description": "Bends each ramp's step 500 toward its hue's peak-chroma lightness. 0 = every hue forced through the same lightness curve, 1 = step 500 lands exactly on the hue's peak."
     },
+    "min_mid_lightness": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.62,
+      "description": "Minimum Oklab lightness for step 500 of the red/yellow/green/cyan/blue/magenta ramps and the primary, applied after hue_lightness_bend (which pulls blue darker, since pure blue peaks near L=0.45). 0.62 is about 5:1 on a near-black background, 0.65-0.70 about 6-7.5:1. 0 disables it."
+    },
     "vibrancy_coherence": {
       "type": "number",
       "minimum": 0,

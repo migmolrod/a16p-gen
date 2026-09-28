@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 /// has to cover everything an app needs -- including status colors, the
 /// terminal ANSI16 palette and syntax highlighting, even where a token is
 /// a straight 1:1 alias of a semantic role today. The indirection is the
-/// point: e.g. `syntax.string` and `status.success` are both green now,
-/// but can be retuned independently without touching any template.
+/// point: e.g. `syntax.comment` and `status.success` both resolve to green,
+/// but either can be retuned independently without touching any template.
 // Keys are quoted so TOML treats each as one flat string key (matching
 // `ComponentMapping`'s `BTreeMap<String, String>`) instead of parsing the
 // dot as a nested-table path, which would produce a map of maps.
@@ -93,25 +93,30 @@ pub const DEFAULT_COMPONENT_TOML: &str = r#"
 "editor.search_foreground" = "background"
 "editor.reference_background" = "surface_raised"
 
-# Syntax colors pick from the ANSI hue slots rather than the status roles:
-# strings are green because of hue, not because they mean "success".
-"syntax.comment" = "text_muted_color"
-"syntax.punctuation" = "text_muted_color"
-"syntax.operator" = "text_color"
+# Syntax colors pick from the ANSI hue slots rather than the status roles
+# (strings aren't magenta because they mean anything). Deliberately
+# restrained: only literals, keywords, comments, decorators and
+# operators/punctuation get a hue; everything else (identifiers, functions,
+# types, properties, constants, tags) stays plain foreground.
+"syntax.keyword" = "ansi_color4"
+"syntax.operator" = "ansi_color6"
+"syntax.punctuation" = "ansi_color6"
+"syntax.string" = "ansi_color5"
+"syntax.escape" = "ansi_color5"
+"syntax.number" = "ansi_color1"
+"syntax.comment" = "ansi_color2"
+"syntax.decorator" = "ansi_color3"
+"syntax.preproc" = "ansi_color3"
 "syntax.variable" = "foreground"
-"syntax.variable_builtin" = "ansi_color1"
-"syntax.identifier" = "ansi_color1"
-"syntax.tag" = "ansi_color1"
-"syntax.string" = "ansi_color2"
-"syntax.type" = "ansi_color3"
-"syntax.tag_attribute" = "ansi_color3"
-"syntax.function" = "ansi_color4"
-"syntax.constant" = "ansi_color5"
-"syntax.keyword" = "ansi_color5"
-"syntax.property" = "ansi_color6"
-"syntax.preproc" = "ansi_color6"
-"syntax.special" = "ansi_color6"
-"syntax.escape" = "ansi_color6"
+"syntax.variable_builtin" = "foreground"
+"syntax.identifier" = "foreground"
+"syntax.function" = "foreground"
+"syntax.type" = "foreground"
+"syntax.constant" = "foreground"
+"syntax.property" = "foreground"
+"syntax.special" = "foreground"
+"syntax.tag" = "foreground"
+"syntax.tag_attribute" = "foreground"
 
 "terminal.background" = "background"
 "terminal.foreground" = "foreground"
