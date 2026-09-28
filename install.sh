@@ -94,9 +94,11 @@ if [ -x "$bin" ]; then
 fi
 
 mkdir -p "$bin_dir"
-# install writes a new file and renames it, so a running a16p is never
-# left with a half-written binary.
-install -m 755 "$tmp/a16p-$TARGET/a16p" "$bin"
+# Stage next to the target, then rename: mv within one filesystem is an
+# atomic rename, so the old binary -- possibly the one running
+# `a16p self-update` right now -- is swapped out, never overwritten.
+install -m 755 "$tmp/a16p-$TARGET/a16p" "$bin.new"
+mv -f "$bin.new" "$bin"
 new_version="$("$bin" --version)"
 
 if [ -n "$old_version" ] && [ "$old_version" != "$new_version" ]; then
