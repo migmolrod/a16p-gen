@@ -133,11 +133,15 @@ and an artix-ansible role were considered and left out for now.
   text on a status fill), `diff`, `editor`, `syntax`, `terminal`
   (`terminal.color0..15`, the ANSI16 contract), and `hue` (decorative
   per-hue picks for bar modules/statusline segments with no status
-  meaning). Many are 1:1 aliases of a semantic role today (e.g.
-  `syntax.string` and `status.success` both → green) — the point is they
-  can be retuned independently without touching any template. `syntax.*`
-  deliberately points at `ansi_colorN` slots, not status roles (strings
-  are green for hue, not because they mean success). Templates that
+  meaning). Many are 1:1 aliases of a semantic role today — the point is
+  they can be retuned independently without touching any template (proved
+  out 2026-09-28: the syntax scheme was reworked by editing only
+  `syntax.*` mappings plus two new tokens). `syntax.*` deliberately points
+  at `ansi_colorN` slots, not status roles, and is deliberately restrained
+  (user's preference, "too colorful" otherwise): keyword blue, operators +
+  punctuation cyan, strings/chars/escapes magenta, numbers red
+  (`syntax.number`), comments green, decorators/attributes yellow
+  (`syntax.decorator`, `syntax.preproc`), everything else plain foreground. Templates that
   previously reached straight into primitive ramps got new semantic
   roles instead (`primary_muted`, `surface_raised`, `*_subtle`,
   `warning_emphasis`, `magenta_emphasis`).

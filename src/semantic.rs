@@ -42,7 +42,7 @@ text_color = "auto:fg"
 # on a dark bg, ~4.0:1 on a light one) -- too dim for text either way, so
 # muted text sits a step past 500 toward fg: dark 400 (~5.3:1). Light keeps
 # 700 (~8.2:1) rather than the mirror 600 (~5.8:1), which would only lower it.
-text_muted_color = { dark = "neutral.400", light = "neutral.700" }
+text_muted_color = { dark = "neutral.500", light = "neutral.700" }
 
 background = "auto:bg"
 foreground = "auto:fg"
@@ -57,13 +57,13 @@ ansi_color6 = "cyan.500"
 # 7/8 mirror with 0/15 (which follow bg/fg via auto:*): 7 is a dimmed
 # foreground, 8 a lifted background, in both modes.
 ansi_color7 = { dark = "neutral.300", light = "neutral.700" }
-ansi_color8 = { dark = "neutral.600", light = "neutral.400" }
-ansi_color9 = "red.400"
-ansi_color10 = "green.400"
-ansi_color11 = "yellow.400"
-ansi_color12 = "blue.400"
-ansi_color13 = "magenta.400"
-ansi_color14 = "cyan.400"
+ansi_color8 = { dark = "neutral.800", light = "neutral.400" }
+ansi_color9 = "red.300"
+ansi_color10 = "green.300"
+ansi_color11 = "yellow.300"
+ansi_color12 = "blue.300"
+ansi_color13 = "magenta.300"
+ansi_color14 = "cyan.300"
 ansi_color15 = "auto:fg"
 "#;
 
