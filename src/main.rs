@@ -199,17 +199,23 @@ fn main() -> Result<()> {
             println!();
             let mut sorted = clusters.clone();
             sorted.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
-            println!("{:>7} {:>7} {:>7} {:>7}  hex", "weight", "L", "C", "h");
+            println!(
+                "{:>7} {:>7} {:>7} {:>7}  {:<7}  preview",
+                "weight", "L", "C", "h", "hex"
+            );
             for c in &sorted {
                 let lch = color::oklab_to_oklch(c.oklab);
                 let rgb = color::oklab_to_srgb_u8(c.oklab);
                 println!(
-                    "{:>6.1}% {:>7.3} {:>7.3} {:>7.1}  {}",
+                    "{:>6.1}% {:>7.3} {:>7.3} {:>7.1}  {}  \x1b[48;2;{};{};{}m        \x1b[0m",
                     c.weight * 100.0,
                     lch[0],
                     lch[1],
                     lch[2],
-                    color::to_hex(rgb)
+                    color::to_hex(rgb),
+                    rgb[0],
+                    rgb[1],
+                    rgb[2]
                 );
             }
         }
